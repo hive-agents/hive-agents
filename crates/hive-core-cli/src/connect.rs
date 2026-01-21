@@ -104,7 +104,7 @@ pub fn run(opts: ConnectOptions) -> Result<()> {
 
     let profile_id = ProfileId(Uuid::new_v4());
     let created_at: DateTime<Utc> = Utc::now();
-    let secret_prefix = format!("keychain:get-hive:profile/{}/", profile_id.0);
+    let secret_prefix = format!("keychain:hive-agents:profile/{}/", profile_id.0);
 
     let profile = Profile {
         profile_version: PROFILE_VERSION,

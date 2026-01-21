@@ -118,9 +118,9 @@ fn print_connect_usage() {
     println!("  --profile <PATH>         profile json file");
     println!("  --secrets <PATH>         secrets json file (secret_ref -> value)");
     println!("  --mountpoint <PATH>      mountpoint path");
-    println!("  --cache-dir <PATH>       cache directory (default: ~/.cache/get-hive/<profile>)");
+    println!("  --cache-dir <PATH>       cache directory (default: ~/.cache/hive-agents/<profile>)");
     println!("  --cache-size <MIB>       cache size in MiB (default: 10240)");
-    println!("  --known-hosts <PATH>     known_hosts file (default: ~/.config/get-hive/known_hosts)");
+    println!("  --known-hosts <PATH>     known_hosts file (default: ~/.config/hive-agents/known_hosts)");
     println!("  --accept-host-key        fetch and pin the host key automatically");
     println!("  --ssh-path <PATH>        ssh binary path (default: ssh)");
     println!("  --juicefs-path <PATH>    juicefs binary path (default: juicefs)");
@@ -443,14 +443,14 @@ fn detect_platform() -> Platform {
 fn default_cache_dir(profile: &Profile) -> PathBuf {
     let suffix = profile.profile_id.0.to_string();
     if let Ok(home) = env::var("HOME") {
-        return PathBuf::from(home).join(".cache/get-hive").join(suffix);
+        return PathBuf::from(home).join(".cache/hive-agents").join(suffix);
     }
     PathBuf::from("cache").join(suffix)
 }
 
 fn default_known_hosts_path() -> PathBuf {
     if let Ok(home) = env::var("HOME") {
-        return PathBuf::from(home).join(".config/get-hive/known_hosts");
+        return PathBuf::from(home).join(".config/hive-agents/known_hosts");
     }
     PathBuf::from("known_hosts")
 }

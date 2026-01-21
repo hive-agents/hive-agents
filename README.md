@@ -1,4 +1,4 @@
-# get-hive (MVP)
+# hive-agents (MVP)
 
 This repo hosts the MVP implementation of Hive and hive-core:
 
@@ -150,10 +150,10 @@ Example:
 
 ```json
 {
-  "keychain:get-hive:profile/<id>/ssh_ed25519": "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n",
-  "keychain:get-hive:profile/<id>/meta_password": "...",
-  "keychain:get-hive:profile/<id>/s3_access_key": "...",
-  "keychain:get-hive:profile/<id>/s3_secret_key": "..."
+  "keychain:hive-agents:profile/<id>/ssh_ed25519": "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n",
+  "keychain:hive-agents:profile/<id>/meta_password": "...",
+  "keychain:hive-agents:profile/<id>/s3_access_key": "...",
+  "keychain:hive-agents:profile/<id>/s3_secret_key": "..."
 }
 ```
 

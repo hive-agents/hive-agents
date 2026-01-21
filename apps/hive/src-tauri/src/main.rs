@@ -29,7 +29,7 @@ struct AppPaths {
 
 impl AppPaths {
     fn new() -> Result<Self, String> {
-        let dirs = ProjectDirs::from("com", "get-hive", "Hive")
+        let dirs = ProjectDirs::from("com", "hive-agents", "Hive")
             .or_else(|| ProjectDirs::from("", "", "Hive"));
 
         let (data_dir, config_dir, cache_dir) = if let Some(dirs) = dirs {
@@ -628,7 +628,7 @@ fn generate_device_keypair(comment: &str) -> Result<(String, String), String> {
         .as_nanos();
     let mut key_path = None;
     for attempt in 0..100 {
-        let candidate = base.join(format!("get-hive-device-key-{pid}-{now}-{attempt}"));
+        let candidate = base.join(format!("hive-agents-device-key-{pid}-{now}-{attempt}"));
         if !candidate.exists() {
             key_path = Some(candidate);
             break;

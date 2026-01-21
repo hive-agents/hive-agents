@@ -54,7 +54,7 @@ Tauri commands are invoked via `apps/hive/src/lib/api.ts`. All args use snake_ca
 
 ### Status expectations
 
-`Status` should align with `hive-desktop-core` (`get-hive/crates/hive-desktop-core/src/supervisor.rs`):
+`Status` should align with `hive-desktop-core` (`hive-agents/crates/hive-desktop-core/src/supervisor.rs`):
 
 - `state`: string (snake_case; UI treats `mounted` as connected)
 - `mountpoint`: string or null

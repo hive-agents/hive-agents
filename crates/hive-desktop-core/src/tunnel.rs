@@ -219,7 +219,7 @@ fn create_temp_file() -> Result<(std::path::PathBuf, std::fs::File)> {
         options.mode(0o600);
     }
     for attempt in 0..100 {
-        let filename = format!("get-hive-ssh-key-{pid}-{now}-{attempt}.tmp");
+        let filename = format!("hive-agents-ssh-key-{pid}-{now}-{attempt}.tmp");
         let path = base.join(filename);
         match options.open(&path) {
             Ok(file) => return Ok((path, file)),

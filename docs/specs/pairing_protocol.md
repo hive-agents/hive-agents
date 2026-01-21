@@ -84,9 +84,9 @@ Response body (success, HTTP 200):
 {
   "profile_id": "b1c6c2a7-1a29-4df4-bd38-4a4fe2cc8a0a",
   "secrets": {
-    "keychain:get-hive:profile/b1c6c2a7-1a29-4df4-bd38-4a4fe2cc8a0a/meta_password": "<postgres-password>",
-    "keychain:get-hive:profile/b1c6c2a7-1a29-4df4-bd38-4a4fe2cc8a0a/s3_access_key": "<s3-access-key>",
-    "keychain:get-hive:profile/b1c6c2a7-1a29-4df4-bd38-4a4fe2cc8a0a/s3_secret_key": "<s3-secret-key>"
+    "keychain:hive-agents:profile/b1c6c2a7-1a29-4df4-bd38-4a4fe2cc8a0a/meta_password": "<postgres-password>",
+    "keychain:hive-agents:profile/b1c6c2a7-1a29-4df4-bd38-4a4fe2cc8a0a/s3_access_key": "<s3-access-key>",
+    "keychain:hive-agents:profile/b1c6c2a7-1a29-4df4-bd38-4a4fe2cc8a0a/s3_secret_key": "<s3-secret-key>"
   }
 }
 ```

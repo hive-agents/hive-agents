@@ -365,7 +365,7 @@ fn set_key_permissions(path: &Path) -> Result<()> {
 }
 
 fn build_secret_map(profile_id: &ProfileId, env: &EnvConfig) -> BTreeMap<String, String> {
-    let prefix = format!("keychain:get-hive:profile/{}/", profile_id.0);
+    let prefix = format!("keychain:hive-agents:profile/{}/", profile_id.0);
     let mut secrets = BTreeMap::new();
     secrets.insert(format!("{}meta_password", prefix), env.postgres_password.clone());
     secrets.insert(format!("{}s3_access_key", prefix), env.s3_access_key.clone());
