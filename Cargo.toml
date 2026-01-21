@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/hive-protocol",
+  "crates/hive-core-cli",
+  "crates/hive-desktop-core",
+  "crates/hive-desktop-cli",
+]

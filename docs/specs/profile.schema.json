@@ -1,0 +1,202 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Profile",
+  "type": "object",
+  "required": [
+    "created_at",
+    "display_name",
+    "juicefs",
+    "profile_id",
+    "profile_version",
+    "ssh",
+    "tunnels"
+  ],
+  "properties": {
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "display_name": {
+      "type": "string"
+    },
+    "juicefs": {
+      "$ref": "#/definitions/JuiceFsConfig"
+    },
+    "profile_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "profile_version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "ssh": {
+      "$ref": "#/definitions/SshConfig"
+    },
+    "tunnels": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/TunnelConfig"
+      }
+    }
+  },
+  "definitions": {
+    "EndpointMode": {
+      "type": "string",
+      "enum": [
+        "tunneled",
+        "direct"
+      ]
+    },
+    "JuiceFsConfig": {
+      "type": "object",
+      "required": [
+        "meta",
+        "object",
+        "volume_name"
+      ],
+      "properties": {
+        "meta": {
+          "$ref": "#/definitions/JuiceFsMetaConfig"
+        },
+        "object": {
+          "$ref": "#/definitions/JuiceFsObjectConfig"
+        },
+        "volume_name": {
+          "type": "string"
+        }
+      }
+    },
+    "JuiceFsMetaConfig": {
+      "type": "object",
+      "required": [
+        "database",
+        "dsn_template",
+        "engine",
+        "password_ref",
+        "user"
+      ],
+      "properties": {
+        "database": {
+          "type": "string"
+        },
+        "dsn_template": {
+          "type": "string"
+        },
+        "engine": {
+          "$ref": "#/definitions/MetaEngine"
+        },
+        "password_ref": {
+          "type": "string"
+        },
+        "user": {
+          "type": "string"
+        }
+      }
+    },
+    "JuiceFsObjectConfig": {
+      "type": "object",
+      "required": [
+        "access_key_ref",
+        "bucket_name",
+        "bucket_url_template",
+        "endpoint_mode",
+        "secret_key_ref",
+        "storage"
+      ],
+      "properties": {
+        "access_key_ref": {
+          "type": "string"
+        },
+        "bucket_name": {
+          "type": "string"
+        },
+        "bucket_url_template": {
+          "type": "string"
+        },
+        "endpoint_mode": {
+          "$ref": "#/definitions/EndpointMode"
+        },
+        "secret_key_ref": {
+          "type": "string"
+        },
+        "storage": {
+          "$ref": "#/definitions/StorageKind"
+        }
+      }
+    },
+    "MetaEngine": {
+      "type": "string",
+      "enum": [
+        "postgres"
+      ]
+    },
+    "SshConfig": {
+      "type": "object",
+      "required": [
+        "host",
+        "host_key_fingerprint_sha256",
+        "identity_key_ref",
+        "port",
+        "user"
+      ],
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "host_key_fingerprint_sha256": {
+          "type": "string"
+        },
+        "identity_key_ref": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "user": {
+          "type": "string"
+        }
+      }
+    },
+    "StorageKind": {
+      "type": "string",
+      "enum": [
+        "s3"
+      ]
+    },
+    "TunnelConfig": {
+      "type": "object",
+      "required": [
+        "local_bind_host",
+        "local_port",
+        "name",
+        "remote_host",
+        "remote_port"
+      ],
+      "properties": {
+        "local_bind_host": {
+          "type": "string"
+        },
+        "local_port": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "name": {
+          "type": "string"
+        },
+        "remote_host": {
+          "type": "string"
+        },
+        "remote_port": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        }
+      }
+    }
+  }
+}

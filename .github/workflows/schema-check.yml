@@ -1,0 +1,13 @@
+name: schema-check
+on:
+  push:
+  pull_request:
+
+jobs:
+  schema-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p hive-protocol
+      - run: git diff --exit-code docs/specs

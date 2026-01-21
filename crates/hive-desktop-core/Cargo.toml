@@ -1,0 +1,13 @@
+[package]
+name = "hive-desktop-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hive-protocol = { path = "../hive-protocol" }
+tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros", "process", "sync", "time", "net", "io-util"] }
+tokio-postgres = "0.7"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
