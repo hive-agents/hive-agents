@@ -1,12 +1,14 @@
 use crate::host_key;
 use crate::util::{err, take_value, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use hive_protocol::{
-    EndpointMode, JuiceFsConfig, JuiceFsMetaConfig, JuiceFsObjectConfig, MetaEngine, Profile,
-    ProfileId, SecretRef, SshConfig, StorageKind, TunnelConfig, PROFILE_VERSION,
+    EndpointMode, JuiceFsConfig, JuiceFsMetaConfig, JuiceFsObjectConfig, MetaEngine, PairingEnvelope,
+    Profile, ProfileId, SecretRef, SshConfig, StorageKind, TunnelConfig, PROFILE_VERSION,
 };
+use serde::Serialize;
 use std::collections::VecDeque;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -162,12 +164,25 @@ pub fn run(opts: ConnectOptions) -> Result<()> {
         .validate()
         .map_err(|e| err(format!("generated profile invalid: {}", e)))?;
 
+    let otp = generate_hex_secret(32)?;
+    let expires_at = Utc::now() + Duration::minutes(5);
+    write_otp_record(&opts.root, &otp, &profile_id, expires_at)?;
+    // TODO: Allow overriding the HTTPS pairing host if SSH host differs.
+    let pair_url = format!("https://{}/pair", profile.ssh.host);
+
+    let envelope = PairingEnvelope {
+        profile,
+        otp,
+        otp_expires_at: expires_at,
+        pair_url,
+    };
+
     let json = if opts.pretty {
-        serde_json::to_string_pretty(&profile)
+        serde_json::to_string_pretty(&envelope)
     } else {
-        serde_json::to_string(&profile)
+        serde_json::to_string(&envelope)
     }
-    .map_err(|e| err(format!("failed to serialize profile: {}", e)))?;
+    .map_err(|e| err(format!("failed to serialize envelope: {}", e)))?;
 
     if let Some(out) = opts.out.as_ref() {
         fs::write(out, json)
@@ -178,6 +193,65 @@ pub fn run(opts: ConnectOptions) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct OtpRecord {
+    otp: String,
+    profile_id: ProfileId,
+    expires_at: DateTime<Utc>,
+}
+
+fn write_otp_record(
+    root: &Path,
+    otp: &str,
+    profile_id: &ProfileId,
+    expires_at: DateTime<Utc>,
+) -> Result<()> {
+    let dir = root.join("state").join("pairing");
+    fs::create_dir_all(&dir)
+        .map_err(|e| err(format!("failed to create {}: {}", dir.display(), e)))?;
+    let path = dir.join(format!("{}.json", otp));
+    if path.exists() {
+        return Err(err("otp collision; retry"));
+    }
+
+    let record = OtpRecord {
+        otp: otp.to_string(),
+        profile_id: profile_id.clone(),
+        expires_at,
+    };
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&path)
+        .map_err(|e| err(format!("failed to write {}: {}", path.display(), e)))?;
+    let payload = serde_json::to_vec_pretty(&record)
+        .map_err(|e| err(format!("failed to serialize otp record: {}", e)))?;
+    file.write_all(&payload)
+        .map_err(|e| err(format!("failed to write {}: {}", path.display(), e)))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(0o600);
+        fs::set_permissions(&path, perms).ok();
+    }
+
+    Ok(())
+}
+
+fn generate_hex_secret(bytes: usize) -> Result<String> {
+    let mut buffer = vec![0u8; bytes];
+    let mut file =
+        fs::File::open("/dev/urandom").map_err(|e| err(format!("failed to open /dev/urandom: {}", e)))?;
+    file.read_exact(&mut buffer)
+        .map_err(|e| err(format!("failed to read /dev/urandom: {}", e)))?;
+    let mut output = String::with_capacity(bytes * 2);
+    for byte in buffer {
+        output.push_str(&format!("{:02x}", byte));
+    }
+    Ok(output)
 }
 
 fn read_env_file(path: &Path) -> Result<std::collections::HashMap<String, String>> {

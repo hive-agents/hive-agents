@@ -126,7 +126,7 @@ pub async fn start_tunnel(
     cmd.arg("-o").arg("ServerAliveInterval=10");
     cmd.arg("-o").arg("ServerAliveCountMax=3");
     cmd.arg("-o").arg("BatchMode=yes");
-    cmd.arg("-o").arg("StrictHostKeyChecking=yes");
+    cmd.arg("-o").arg("StrictHostKeyChecking=accept-new");
     cmd.arg("-o")
         .arg(format!("UserKnownHostsFile={}", known_hosts_path.display()));
     cmd.arg("-o").arg("IdentitiesOnly=yes");

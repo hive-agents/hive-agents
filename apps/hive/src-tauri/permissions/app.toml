@@ -1,0 +1,41 @@
+# Tauri ACL permissions for app commands.
+
+[[permission]]
+identifier = "allow-profiles-list"
+description = "Enables the profiles_list command."
+commands.allow = ["profiles_list"]
+
+[[permission]]
+identifier = "allow-profile-import"
+description = "Enables the profile_import command."
+commands.allow = ["profile_import"]
+
+[[permission]]
+identifier = "allow-get-local-settings"
+description = "Enables the get_local_settings command."
+commands.allow = ["get_local_settings"]
+
+[[permission]]
+identifier = "allow-set-local-settings"
+description = "Enables the set_local_settings command."
+commands.allow = ["set_local_settings"]
+
+[[permission]]
+identifier = "allow-connect"
+description = "Enables the connect command."
+commands.allow = ["connect"]
+
+[[permission]]
+identifier = "allow-disconnect"
+description = "Enables the disconnect command."
+commands.allow = ["disconnect"]
+
+[[permission]]
+identifier = "allow-status"
+description = "Enables the status command."
+commands.allow = ["status"]
+
+[[permission]]
+identifier = "allow-logs-tail"
+description = "Enables the logs_tail command."
+commands.allow = ["logs_tail"]

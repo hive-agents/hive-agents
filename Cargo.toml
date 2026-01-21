@@ -3,6 +3,8 @@ resolver = "2"
 members = [
   "crates/hive-protocol",
   "crates/hive-core-cli",
+  "crates/hive-core-pairing",
   "crates/hive-desktop-core",
   "crates/hive-desktop-cli",
 ]
+exclude = ["apps/hive/src-tauri"]

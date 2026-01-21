@@ -36,6 +36,7 @@ pub fn run(opts: StatusOptions) -> Result<()> {
 
     println!("postgres port: {}", port_status("127.0.0.1:5432"));
     println!("s3 port: {}", port_status("127.0.0.1:8333"));
+    println!("pairing port: {}", port_status("127.0.0.1:8081"));
 
     match docker_compose_ps(&opts.root) {
         Ok(output) => {
@@ -57,7 +58,8 @@ pub fn run(opts: StatusOptions) -> Result<()> {
     println!("connection hints:");
     println!("- ssh user: hive");
     println!("- forwards: 127.0.0.1:5432 (postgres), 127.0.0.1:8333 (s3)");
-    println!("- add device: hive-core device add --name <NAME> --pubkey-file <PATH>");
+    println!("- profile envelope: hive-core connect --host <public-host>");
+    println!("- manual device add: hive-core device add --name <NAME> --pubkey-file <PATH>");
     Ok(())
 }
 

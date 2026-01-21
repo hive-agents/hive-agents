@@ -86,6 +86,7 @@ pub fn run(opts: InstallOptions) -> Result<()> {
 
     let env_config = ensure_env(&opts.root, &opts)?;
     ensure_s3_config(&opts.root, &env_config, opts.force)?;
+    ensure_pairing_binary(&opts.root)?;
 
     if !opts.skip_up {
         run_docker_compose(&opts.root)?;
@@ -103,6 +104,8 @@ fn prepare_dirs(root: &Path) -> Result<()> {
     fs::create_dir_all(root).map_err(|e| err(format!("failed to create {}: {}", root.display(), e)))?;
 
     let data_dir = root.join("data");
+    fs::create_dir_all(root.join("bin"))
+        .map_err(|e| err(format!("failed to create bin dir: {}", e)))?;
     fs::create_dir_all(data_dir.join("postgres"))
         .map_err(|e| err(format!("failed to create postgres data dir: {}", e)))?;
     fs::create_dir_all(data_dir.join("seaweed"))
@@ -111,6 +114,8 @@ fn prepare_dirs(root: &Path) -> Result<()> {
         .map_err(|e| err(format!("failed to create state dir: {}", e)))?;
     fs::create_dir_all(root.join("state").join("seaweedfs"))
         .map_err(|e| err(format!("failed to create seaweed state dir: {}", e)))?;
+    fs::create_dir_all(root.join("state").join("pairing"))
+        .map_err(|e| err(format!("failed to create pairing state dir: {}", e)))?;
     Ok(())
 }
 
@@ -136,14 +141,17 @@ fn warn_if_compose_outdated(root: &Path, force: bool) -> Result<()> {
         Err(_) => return Ok(()),
     };
 
-    if content.contains("-s3.config=/etc/seaweedfs/s3.json")
-        && content.contains("./state/seaweedfs:/etc/seaweedfs")
-    {
+    let has_seaweed_config = content.contains("-s3.config=/etc/seaweedfs/s3.json")
+        && content.contains("./state/seaweedfs:/etc/seaweedfs");
+    let has_pairing = content.contains("hive-core-pairing")
+        && content.contains("pairing:");
+
+    if has_seaweed_config && has_pairing {
         return Ok(());
     }
 
     eprintln!(
-        "warning: compose.yml may be outdated; rerun with --force to update seaweedfs s3 config"
+        "warning: compose.yml may be outdated; rerun with --force to update services"
     );
     Ok(())
 }
@@ -348,6 +356,53 @@ fn run_docker_compose(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn ensure_pairing_binary(root: &Path) -> Result<()> {
+    let repo_root = repo_root();
+    let cargo_toml = repo_root.join("Cargo.toml");
+    if !cargo_toml.exists() {
+        return Err(err(format!(
+            "pairing build requires source checkout (missing {})",
+            cargo_toml.display()
+        )));
+    }
+
+    let status = Command::new("cargo")
+        .arg("build")
+        .arg("-p")
+        .arg("hive-core-pairing")
+        .arg("--release")
+        .current_dir(&repo_root)
+        .status()
+        .map_err(|e| err(format!("failed to build pairing server: {}", e)))?;
+    if !status.success() {
+        return Err(err("pairing server build failed"));
+    }
+
+    let binary_src = repo_root.join("target").join("release").join("hive-core-pairing");
+    let binary_dst = root.join("bin").join("hive-core-pairing");
+    if !binary_src.exists() {
+        return Err(err(format!(
+            "pairing binary missing after build: {}",
+            binary_src.display()
+        )));
+    }
+    fs::copy(&binary_src, &binary_dst)
+        .map_err(|e| err(format!("failed to copy pairing binary: {}", e)))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(0o755);
+        fs::set_permissions(&binary_dst, perms).ok();
+    }
+
+    Ok(())
+}
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
 fn format_juicefs(root: &Path, env: &EnvConfig, wait_seconds: u64) -> Result<()> {
     let marker_path = root.join("state").join("juicefs.format");
     if marker_path.exists() {
@@ -476,7 +531,9 @@ fn print_install_hints(root: &Path) -> Result<()> {
     println!("install complete");
     println!("root: {}", root.display());
     println!("next steps:");
-    println!("- add a device key with: hive-core device add --name <NAME> --pubkey-file <PATH>");
+    println!("- export a pairing envelope: hive-core connect --host <public-host>");
     println!("- share the SSH host key fingerprint from: hive-core fingerprint");
+    println!("- configure Caddy to proxy https://<host>/pair to http://127.0.0.1:8081");
+    println!("- manual device add (fallback): hive-core device add --name <NAME> --pubkey-file <PATH>");
     Ok(())
 }

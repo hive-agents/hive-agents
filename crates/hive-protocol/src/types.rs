@@ -28,6 +28,33 @@ pub struct Profile {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PairingEnvelope {
+    pub profile: Profile,
+    pub otp: String,
+    pub otp_expires_at: DateTime<Utc>,
+    pub pair_url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PairRequest {
+    pub otp: String,
+    pub device_name: String,
+    pub device_pubkey: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PairResponse {
+    pub profile_id: ProfileId,
+    pub secrets: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PairError {
+    pub error: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SshConfig {
     pub host: String,
     pub port: u16,

@@ -138,6 +138,7 @@ fn print_device_usage() {
 fn print_connect_usage() {
     println!("hive-core connect [options]");
     println!("");
+    println!("outputs a JSON envelope containing profile + otp + pair_url");
     println!("options:");
     println!("  --root <PATH>           install root (default: /opt/hive-core)");
     println!("  --host <HOST>           public ssh host (or set HIVE_HOST)");

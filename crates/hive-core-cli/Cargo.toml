@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 hive-protocol = { path = "../hive-protocol" }
-chrono = { version = "0.4", features = ["clock"] }
+chrono = { version = "0.4", features = ["clock", "serde"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "0.8", features = ["v4"] }

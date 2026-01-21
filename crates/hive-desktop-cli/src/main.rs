@@ -391,7 +391,9 @@ fn run_keygen(opts: KeygenOptions) -> Result<()> {
 fn load_profile(path: &Path) -> Result<Profile> {
     let content = fs::read_to_string(path)
         .map_err(|e| err(format!("failed to read {}: {}", path.display(), e)))?;
-    let profile: Profile = serde_json::from_str(&content)?;
+    let value: serde_json::Value = serde_json::from_str(&content)?;
+    let profile_value = value.get("profile").cloned().unwrap_or(value);
+    let profile: Profile = serde_json::from_value(profile_value)?;
     profile
         .validate()
         .map_err(|e| err(format!("profile invalid: {}", e)))?;
@@ -458,9 +460,7 @@ fn ensure_known_hosts(profile: &Profile, path: &Path, accept: bool) -> Result<()
         return Ok(());
     }
     if !accept {
-        return Err(err(
-            "known_hosts missing entry; rerun with --accept-host-key",
-        ));
+        return Ok(());
     }
 
     let keyscan = run_keyscan(&profile.ssh.host, profile.ssh.port)?;

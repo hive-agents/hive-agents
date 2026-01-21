@@ -34,3 +34,24 @@ services:
     volumes:
       - ./data/seaweed:/data
       - ./state/seaweedfs:/etc/seaweedfs:ro
+
+  pairing:
+    image: debian:bookworm-slim
+    restart: unless-stopped
+    command:
+      [
+        "/opt/hive-core/bin/hive-core-pairing",
+        "--root",
+        "/opt/hive-core",
+        "--listen",
+        "0.0.0.0:8081",
+        "--authorized-keys",
+        "/home/hive/.ssh/authorized_keys",
+      ]
+    ports:
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - ./state:/opt/hive-core/state
+      - ./bin:/opt/hive-core/bin:ro
+      - ./.env:/opt/hive-core/.env:ro
+      - /home/hive/.ssh:/home/hive/.ssh

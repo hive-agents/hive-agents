@@ -1,0 +1,1 @@
+{"main":{"identifier":"main","description":"Main window capability for Hive.","local":true,"windows":["main"],"permissions":["allow-profiles-list","allow-profile-import","allow-get-local-settings","allow-set-local-settings","allow-connect","allow-disconnect","allow-status","allow-logs-tail","dialog:allow-open","clipboard-manager:allow-write-text"]}}
