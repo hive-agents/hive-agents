@@ -2,11 +2,12 @@ use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::fs;
 use std::io::Write;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::{
-    extract::{rejection::JsonRejection, State},
+    extract::{rejection::JsonRejection, ConnectInfo, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::post,
@@ -71,7 +72,7 @@ async fn run() -> Result<()> {
         .route("/pair", post(pair_handler))
         .with_state(state);
 
-    let addr: std::net::SocketAddr = opts
+    let addr: SocketAddr = opts
         .listen
         .parse()
         .map_err(|_| format!("invalid listen address: {}", opts.listen))?;
@@ -80,7 +81,7 @@ async fn run() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| format!("failed to bind {}: {}", opts.listen, e))?;
-    axum::serve(listener, app)
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .await
         .map_err(|e| format!("server error: {e}"))?;
     Ok(())
@@ -88,11 +89,20 @@ async fn run() -> Result<()> {
 
 async fn pair_handler(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     payload: std::result::Result<Json<PairRequest>, JsonRejection>,
 ) -> Response {
     let Json(payload) = match payload {
         Ok(payload) => payload,
         Err(_) => {
+            log_event(
+                "warn",
+                "pair_reject",
+                &[
+                    ("remote_addr", serde_json::json!(remote_addr.to_string())),
+                    ("reason", serde_json::json!("invalid_json")),
+                ],
+            );
             return error_response(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
@@ -100,10 +110,36 @@ async fn pair_handler(
             )
         }
     };
+    log_event(
+        "info",
+        "pair_request",
+        &[
+            ("remote_addr", serde_json::json!(remote_addr.to_string())),
+            ("device_name", serde_json::json!(payload.device_name)),
+            ("otp_prefix", serde_json::json!(otp_prefix(&payload.otp))),
+            ("pubkey_type", serde_json::json!(pubkey_type(&payload.device_pubkey))),
+        ],
+    );
     // TODO: Add rate limiting and attempt tracking (per-IP or per-OTP).
-    let _ = cleanup_expired_otps(&state.otp_dir);
+    if let Err(err) = cleanup_expired_otps(&state.otp_dir) {
+        log_event(
+            "warn",
+            "otp_cleanup_failed",
+            &[
+                ("remote_addr", serde_json::json!(remote_addr.to_string())),
+                ("error", serde_json::json!(err)),
+            ],
+        );
+    }
     let otp = payload.otp.trim();
     if otp.is_empty() {
+        log_reject(
+            remote_addr,
+            "otp_missing",
+            Some("otp is required"),
+            Some(otp),
+            Some(&payload.device_name),
+        );
         return error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -112,6 +148,13 @@ async fn pair_handler(
     }
 
     if payload.device_name.chars().any(|c| c.is_whitespace()) {
+        log_reject(
+            remote_addr,
+            "device_name_invalid",
+            Some("device_name must not contain whitespace"),
+            Some(otp),
+            Some(&payload.device_name),
+        );
         return error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -122,6 +165,13 @@ async fn pair_handler(
     let pubkey = match normalize_pubkey(&payload.device_pubkey) {
         Ok(value) => value,
         Err(message) => {
+            log_reject(
+                remote_addr,
+                "device_pubkey_invalid",
+                Some(&message),
+                Some(otp),
+                Some(&payload.device_name),
+            );
             return error_response(StatusCode::BAD_REQUEST, "invalid_request", &message);
         }
     };
@@ -130,6 +180,13 @@ async fn pair_handler(
     let record = match load_otp_record(&record_path) {
         Ok(Some(record)) => record,
         Ok(None) => {
+            log_reject(
+                remote_addr,
+                "otp_invalid",
+                Some("OTP is invalid, expired, or already used"),
+                Some(otp),
+                Some(&payload.device_name),
+            );
             return error_response(
                 StatusCode::UNAUTHORIZED,
                 "otp_invalid",
@@ -137,12 +194,28 @@ async fn pair_handler(
             )
         }
         Err(message) => {
+            log_event(
+                "error",
+                "pair_error",
+                &[
+                    ("remote_addr", serde_json::json!(remote_addr.to_string())),
+                    ("reason", serde_json::json!("otp_read_failed")),
+                    ("error", serde_json::json!(message)),
+                ],
+            );
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &message)
         }
     };
 
     if record.otp != otp {
         let _ = fs::remove_file(&record_path);
+        log_reject(
+            remote_addr,
+            "otp_invalid",
+            Some("OTP is invalid, expired, or already used"),
+            Some(otp),
+            Some(&payload.device_name),
+        );
         return error_response(
             StatusCode::UNAUTHORIZED,
             "otp_invalid",
@@ -152,6 +225,13 @@ async fn pair_handler(
 
     if Utc::now() > record.expires_at {
         let _ = fs::remove_file(&record_path);
+        log_reject(
+            remote_addr,
+            "otp_expired",
+            Some("OTP is invalid, expired, or already used"),
+            Some(otp),
+            Some(&payload.device_name),
+        );
         return error_response(
             StatusCode::UNAUTHORIZED,
             "otp_invalid",
@@ -161,12 +241,32 @@ async fn pair_handler(
 
     if let Err(err) = fs::remove_file(&record_path) {
         if err.kind() == std::io::ErrorKind::NotFound {
+            log_reject(
+                remote_addr,
+                "otp_invalid",
+                Some("OTP is invalid, expired, or already used"),
+                Some(otp),
+                Some(&payload.device_name),
+            );
             return error_response(
                 StatusCode::UNAUTHORIZED,
                 "otp_invalid",
                 "OTP is invalid, expired, or already used",
             );
         }
+        log_event(
+            "error",
+            "pair_error",
+            &[
+                ("remote_addr", serde_json::json!(remote_addr.to_string())),
+                ("reason", serde_json::json!("otp_remove_failed")),
+                ("error", serde_json::json!(format!(
+                    "failed to remove otp file {}: {}",
+                    record_path.display(),
+                    err
+                ))),
+            ],
+        );
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal_error",
@@ -176,6 +276,13 @@ async fn pair_handler(
 
     match device_name_exists(&state.authorized_keys, &payload.device_name) {
         Ok(true) => {
+            log_reject(
+                remote_addr,
+                "device_name_exists",
+                Some("device_name already exists"),
+                Some(otp),
+                Some(&payload.device_name),
+            );
             return error_response(
                 StatusCode::CONFLICT,
                 "device_name_exists",
@@ -184,11 +291,29 @@ async fn pair_handler(
         }
         Ok(false) => {}
         Err(message) => {
+            log_event(
+                "error",
+                "pair_error",
+                &[
+                    ("remote_addr", serde_json::json!(remote_addr.to_string())),
+                    ("reason", serde_json::json!("authorized_keys_read_failed")),
+                    ("error", serde_json::json!(message)),
+                ],
+            );
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &message)
         }
     }
 
     if let Err(message) = add_device_key(&state.authorized_keys, &payload.device_name, &pubkey) {
+        log_event(
+            "error",
+            "pair_error",
+            &[
+                ("remote_addr", serde_json::json!(remote_addr.to_string())),
+                ("reason", serde_json::json!("authorized_keys_write_failed")),
+                ("error", serde_json::json!(message)),
+            ],
+        );
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &message);
     }
 
@@ -197,6 +322,15 @@ async fn pair_handler(
         profile_id: record.profile_id.clone(),
         secrets,
     };
+    log_event(
+        "info",
+        "pair_success",
+        &[
+            ("remote_addr", serde_json::json!(remote_addr.to_string())),
+            ("device_name", serde_json::json!(payload.device_name)),
+            ("profile_id", serde_json::json!(record.profile_id.0.to_string())),
+        ],
+    );
 
     (StatusCode::OK, Json(response)).into_response()
 }
@@ -327,6 +461,60 @@ fn cleanup_expired_otps(dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn log_reject(
+    remote_addr: SocketAddr,
+    reason: &str,
+    message: Option<&str>,
+    otp: Option<&str>,
+    device_name: Option<&str>,
+) {
+    let mut fields = vec![
+        ("remote_addr", serde_json::json!(remote_addr.to_string())),
+        ("reason", serde_json::json!(reason)),
+    ];
+    if let Some(message) = message {
+        fields.push(("message", serde_json::json!(message)));
+    }
+    if let Some(otp) = otp {
+        fields.push(("otp_prefix", serde_json::json!(otp_prefix(otp))));
+    }
+    if let Some(device_name) = device_name {
+        fields.push(("device_name", serde_json::json!(device_name)));
+    }
+    log_event("warn", "pair_reject", &fields);
+}
+
+fn log_event(level: &str, event: &str, fields: &[(&str, serde_json::Value)]) {
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "ts".to_string(),
+        serde_json::Value::String(Utc::now().to_rfc3339()),
+    );
+    map.insert("level".to_string(), serde_json::Value::String(level.to_string()));
+    map.insert("event".to_string(), serde_json::Value::String(event.to_string()));
+    for (key, value) in fields {
+        map.insert((*key).to_string(), value.clone());
+    }
+    let line = serde_json::Value::Object(map).to_string();
+    if level == "warn" || level == "error" {
+        eprintln!("{}", line);
+    } else {
+        println!("{}", line);
+    }
+}
+
+fn otp_prefix(otp: &str) -> String {
+    otp.chars().take(8).collect()
+}
+
+fn pubkey_type(pubkey: &str) -> String {
+    pubkey
+        .split_whitespace()
+        .next()
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 fn normalize_pubkey(pubkey: &str) -> Result<String> {

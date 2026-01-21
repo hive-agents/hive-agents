@@ -3,7 +3,7 @@ let invokeFn:
   | null = null
 
 export const isTauri = (): boolean => {
-  return typeof window !== 'undefined' && '__TAURI__' in window
+  return typeof globalThis !== 'undefined' && Boolean((globalThis as { isTauri?: boolean }).isTauri)
 }
 
 export const invoke = async <T>(

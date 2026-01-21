@@ -9,44 +9,21 @@
     "runtime"
   ],
   "properties": {
-    "profile_id": {
-      "type": "string",
-      "format": "uuid"
+    "cache": {
+      "$ref": "#/definitions/CacheSettings"
     },
     "mountpoint": {
       "$ref": "#/definitions/Mountpoint"
     },
-    "cache": {
-      "$ref": "#/definitions/CacheSettings"
+    "profile_id": {
+      "type": "string",
+      "format": "uuid"
     },
     "runtime": {
       "$ref": "#/definitions/RuntimeSettings"
     }
   },
   "definitions": {
-    "Mountpoint": {
-      "type": "object",
-      "required": [
-        "path",
-        "platform"
-      ],
-      "properties": {
-        "platform": {
-          "$ref": "#/definitions/Platform"
-        },
-        "path": {
-          "type": "string"
-        }
-      }
-    },
-    "Platform": {
-      "type": "string",
-      "enum": [
-        "macos",
-        "linux",
-        "windows"
-      ]
-    },
     "CacheSettings": {
       "type": "object",
       "required": [
@@ -64,9 +41,39 @@
         }
       }
     },
+    "Mountpoint": {
+      "type": "object",
+      "required": [
+        "path",
+        "platform"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "platform": {
+          "$ref": "#/definitions/Platform"
+        }
+      }
+    },
+    "Platform": {
+      "type": "string",
+      "enum": [
+        "macos",
+        "linux",
+        "windows"
+      ]
+    },
     "RuntimeSettings": {
       "type": "object",
       "properties": {
+        "last_connected_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
         "last_local_postgres_port": {
           "type": [
             "integer",
@@ -82,13 +89,6 @@
           ],
           "format": "uint16",
           "minimum": 0.0
-        },
-        "last_connected_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
         }
       }
     }
