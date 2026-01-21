@@ -24,6 +24,8 @@ pub enum DesktopError {
     UnsupportedPlatform(&'static str),
     #[error("timeout while {0}")]
     Timeout(&'static str),
+    #[error("pairing error: {0}")]
+    Pairing(String),
 }
 
 pub type Result<T> = std::result::Result<T, DesktopError>;

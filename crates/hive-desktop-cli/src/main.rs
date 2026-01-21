@@ -1,16 +1,19 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
 use hive_desktop_core::{
-    DesktopError, LogLine, LogSource, LogLevel, SecretStore, SupervisorConfig, SupervisorHandle,
+    pair_envelope, DesktopError, LogLevel, LogLine, LogSource, SecretStore, SupervisorConfig,
+    SupervisorHandle,
 };
-use hive_protocol::{CacheSettings, LocalSettings, Mountpoint, Platform, Profile, RuntimeSettings};
+use hive_protocol::{
+    CacheSettings, LocalSettings, Mountpoint, PairingEnvelope, Platform, Profile, RuntimeSettings,
+};
 
 type Result<T> = std::result::Result<T, CliError>;
 
@@ -76,22 +79,6 @@ async fn run() -> Result<()> {
             let opts = parse_connect_args(&mut args)?;
             run_connect(opts).await
         }
-        "secrets-template" => {
-            if wants_help(&args) {
-                print_secrets_usage();
-                return Ok(());
-            }
-            let profile_path = parse_profile_only(&mut args)?;
-            run_secrets_template(&profile_path)
-        }
-        "keygen" => {
-            if wants_help(&args) {
-                print_keygen_usage();
-                return Ok(());
-            }
-            let opts = parse_keygen_args(&mut args)?;
-            run_keygen(opts)
-        }
         _ => Err(err(format!("unknown command: {}", cmd))),
     }
 }
@@ -105,8 +92,6 @@ fn print_usage() {
     println!();
     println!("commands:");
     println!("  connect           run an end-to-end connect session");
-    println!("  secrets-template  print the required secrets JSON map");
-    println!("  keygen            generate an ed25519 device key");
     println!();
     println!("use 'hive-desktop-cli <command> --help' for command options");
 }
@@ -115,8 +100,7 @@ fn print_connect_usage() {
     println!("hive-desktop-cli connect [options]");
     println!();
     println!("options:");
-    println!("  --profile <PATH>         profile json file");
-    println!("  --secrets <PATH>         secrets json file (secret_ref -> value)");
+    println!("  --envelope <PATH>        pairing envelope json file");
     println!("  --mountpoint <PATH>      mountpoint path");
     println!("  --cache-dir <PATH>       cache directory (default: ~/.cache/hive-agents/<profile>)");
     println!("  --cache-size <MIB>       cache size in MiB (default: 10240)");
@@ -128,23 +112,8 @@ fn print_connect_usage() {
     println!("  --status-interval <N>    status poll seconds (default: 5)");
 }
 
-fn print_secrets_usage() {
-    println!("hive-desktop-cli secrets-template --profile <PATH>");
-    println!();
-    println!("prints a JSON map of secret_ref -> empty string");
-}
-
-fn print_keygen_usage() {
-    println!("hive-desktop-cli keygen [options]");
-    println!();
-    println!("options:");
-    println!("  --out <PATH>      output key path (private key)");
-    println!("  --comment <TEXT>  ssh key comment");
-}
-
 struct ConnectOptions {
-    profile_path: PathBuf,
-    secrets_path: PathBuf,
+    envelope_path: PathBuf,
     mountpoint: PathBuf,
     cache_dir: Option<PathBuf>,
     cache_size_mib: u32,
@@ -156,14 +125,8 @@ struct ConnectOptions {
     status_interval: u64,
 }
 
-struct KeygenOptions {
-    out_path: PathBuf,
-    comment: Option<String>,
-}
-
 fn parse_connect_args(args: &mut VecDeque<String>) -> Result<ConnectOptions> {
-    let mut profile_path = None;
-    let mut secrets_path = None;
+    let mut envelope_path = None;
     let mut mountpoint = None;
     let mut cache_dir = None;
     let mut cache_size_mib = 10240u32;
@@ -176,8 +139,7 @@ fn parse_connect_args(args: &mut VecDeque<String>) -> Result<ConnectOptions> {
 
     while let Some(arg) = args.pop_front() {
         match arg.as_str() {
-            "--profile" => profile_path = Some(PathBuf::from(take_value(args, "--profile")?)),
-            "--secrets" => secrets_path = Some(PathBuf::from(take_value(args, "--secrets")?)),
+            "--envelope" => envelope_path = Some(PathBuf::from(take_value(args, "--envelope")?)),
             "--mountpoint" => mountpoint = Some(PathBuf::from(take_value(args, "--mountpoint")?)),
             "--cache-dir" => cache_dir = Some(PathBuf::from(take_value(args, "--cache-dir")?)),
             "--cache-size" => {
@@ -206,13 +168,11 @@ fn parse_connect_args(args: &mut VecDeque<String>) -> Result<ConnectOptions> {
         }
     }
 
-    let profile_path = profile_path.ok_or_else(|| err("--profile is required"))?;
-    let secrets_path = secrets_path.ok_or_else(|| err("--secrets is required"))?;
+    let envelope_path = envelope_path.ok_or_else(|| err("--envelope is required"))?;
     let mountpoint = mountpoint.ok_or_else(|| err("--mountpoint is required"))?;
 
     Ok(ConnectOptions {
-        profile_path,
-        secrets_path,
+        envelope_path,
         mountpoint,
         cache_dir,
         cache_size_mib,
@@ -225,39 +185,15 @@ fn parse_connect_args(args: &mut VecDeque<String>) -> Result<ConnectOptions> {
     })
 }
 
-fn parse_profile_only(args: &mut VecDeque<String>) -> Result<PathBuf> {
-    let mut profile_path = None;
-    while let Some(arg) = args.pop_front() {
-        match arg.as_str() {
-            "--profile" => profile_path = Some(PathBuf::from(take_value(args, "--profile")?)),
-            _ => return Err(err(format!("unknown flag: {}", arg))),
-        }
-    }
-    profile_path.ok_or_else(|| err("--profile is required"))
-}
-
-fn parse_keygen_args(args: &mut VecDeque<String>) -> Result<KeygenOptions> {
-    let mut out_path = None;
-    let mut comment = None;
-    while let Some(arg) = args.pop_front() {
-        match arg.as_str() {
-            "--out" => out_path = Some(PathBuf::from(take_value(args, "--out")?)),
-            "--comment" => comment = Some(take_value(args, "--comment")?),
-            _ => return Err(err(format!("unknown keygen flag: {}", arg))),
-        }
-    }
-
-    let out_path = out_path.ok_or_else(|| err("--out is required"))?;
-    Ok(KeygenOptions { out_path, comment })
-}
-
 fn take_value(args: &mut VecDeque<String>, flag: &str) -> Result<String> {
     args.pop_front()
         .ok_or_else(|| err(format!("missing value for {}", flag)))
 }
 
 async fn run_connect(opts: ConnectOptions) -> Result<()> {
-    let profile = load_profile(&opts.profile_path)?;
+    let envelope = load_envelope(&opts.envelope_path)?;
+    let profile = envelope.profile.clone();
+    let pairing = pair_envelope(&envelope, None).await?;
     let cache_dir = opts
         .cache_dir
         .unwrap_or_else(|| default_cache_dir(&profile));
@@ -266,15 +202,19 @@ async fn run_connect(opts: ConnectOptions) -> Result<()> {
 
     ensure_known_hosts(&profile, &opts.known_hosts, opts.accept_host_key)?;
 
-    let secrets = FileSecretStore::from_path(&opts.secrets_path)?;
+    let mut secrets = pairing.response.secrets;
+    secrets.insert(
+        profile.ssh.identity_key_ref.as_str().to_string(),
+        pairing.device_private_key,
+    );
+    let secrets = MapSecretStore::new(secrets);
     let mut config = SupervisorConfig::default();
     config.known_hosts_path = opts.known_hosts.clone();
     config.ssh_path = opts.ssh_path.clone();
     config.juicefs_path = opts.juicefs_path.clone();
     config.log_capacity = opts.log_lines.max(1);
 
-    let handle =
-        SupervisorHandle::spawn(profile, local_settings, Arc::new(secrets), config);
+    let handle = SupervisorHandle::spawn(profile, local_settings, Arc::new(secrets), config);
     let mut interval = tokio::time::interval(Duration::from_secs(opts.status_interval.max(1)));
     let mut last_log_count = 0usize;
     let mut last_status = String::new();
@@ -354,50 +294,28 @@ async fn run_connect(opts: ConnectOptions) -> Result<()> {
     Ok(())
 }
 
-fn run_secrets_template(profile_path: &Path) -> Result<()> {
-    let profile = load_profile(profile_path)?;
-    let mut map = HashMap::new();
-    map.insert(profile.ssh.identity_key_ref.as_str().to_string(), "");
-    map.insert(profile.juicefs.meta.password_ref.as_str().to_string(), "");
-    map.insert(profile.juicefs.object.access_key_ref.as_str().to_string(), "");
-    map.insert(profile.juicefs.object.secret_key_ref.as_str().to_string(), "");
-    let json = serde_json::to_string_pretty(&map)?;
-    println!("{}", json);
-    Ok(())
-}
-
-fn run_keygen(opts: KeygenOptions) -> Result<()> {
-    if opts.out_path.exists() {
-        return Err(err("output key path already exists"));
-    }
-
-    let mut cmd = Command::new("ssh-keygen");
-    cmd.arg("-t").arg("ed25519").arg("-f").arg(&opts.out_path).arg("-N").arg("");
-    if let Some(comment) = opts.comment.as_ref() {
-        cmd.arg("-C").arg(comment);
-    }
-    let status = cmd.status().map_err(|e| err(format!("ssh-keygen failed: {}", e)))?;
-    if !status.success() {
-        return Err(err("ssh-keygen exited with error"));
-    }
-
-    let pubkey_path = opts.out_path.with_extension("pub");
-    let pubkey = fs::read_to_string(&pubkey_path)
-        .map_err(|e| err(format!("failed to read {}: {}", pubkey_path.display(), e)))?;
-    print!("{}", pubkey);
-    Ok(())
-}
-
-fn load_profile(path: &Path) -> Result<Profile> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| err(format!("failed to read {}: {}", path.display(), e)))?;
-    let value: serde_json::Value = serde_json::from_str(&content)?;
-    let profile_value = value.get("profile").cloned().unwrap_or(value);
-    let profile: Profile = serde_json::from_value(profile_value)?;
-    profile
+fn load_envelope(path: &Path) -> Result<PairingEnvelope> {
+    let content = if path == Path::new("-") {
+        read_stdin()?
+    } else {
+        fs::read_to_string(path)
+            .map_err(|e| err(format!("failed to read {}: {}", path.display(), e)))?
+    };
+    let envelope: PairingEnvelope = serde_json::from_str(&content)
+        .map_err(|e| err(format!("invalid pairing envelope json: {}", e)))?;
+    envelope
+        .profile
         .validate()
         .map_err(|e| err(format!("profile invalid: {}", e)))?;
-    Ok(profile)
+    Ok(envelope)
+}
+
+fn read_stdin() -> Result<String> {
+    let mut buffer = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buffer)
+        .map_err(|e| err(format!("failed to read stdin: {}", e)))?;
+    Ok(buffer)
 }
 
 fn build_local_settings(
@@ -629,20 +547,17 @@ fn print_log(log: &LogLine) {
     );
 }
 
-struct FileSecretStore {
-    secrets: HashMap<String, String>,
+struct MapSecretStore {
+    secrets: BTreeMap<String, String>,
 }
 
-impl FileSecretStore {
-    fn from_path(path: &Path) -> Result<Self> {
-        let content = fs::read_to_string(path)
-            .map_err(|e| err(format!("failed to read {}: {}", path.display(), e)))?;
-        let secrets: HashMap<String, String> = serde_json::from_str(&content)?;
-        Ok(Self { secrets })
+impl MapSecretStore {
+    fn new(secrets: BTreeMap<String, String>) -> Self {
+        Self { secrets }
     }
 }
 
-impl SecretStore for FileSecretStore {
+impl SecretStore for MapSecretStore {
     fn resolve_text(&self, secret: &hive_protocol::SecretRef) -> hive_desktop_core::Result<String> {
         self.secrets
             .get(secret.as_str())

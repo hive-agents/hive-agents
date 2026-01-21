@@ -118,51 +118,23 @@ pairing URL for the client handshake.
 2. Paste the JSON into the Hive desktop app (Tauri).
 3. The app calls the pairing endpoint, stores secrets, and connects.
 
-Pairing expects HTTPS. Proxy `https://<host>/pair` to `http://127.0.0.1:8081`
-with Caddy or a similar reverse proxy.
+Pairing expects HTTPS for non-local hosts. Proxy `https://<host>/pair` to
+`http://127.0.0.1:8081` with Caddy or a similar reverse proxy. For local dev,
+`hive-core connect --host localhost` emits `http://localhost:8081/pair`.
 
-## End-to-end test (CLI, manual fallback)
+## End-to-end test (CLI)
 
-Generate a device key on the client:
-
-```bash
-cargo run -p hive-desktop-cli keygen --out ~/.ssh/hive_ed25519 --comment "hive-laptop"
-```
-
-Add the device key on the server:
+Generate a pairing envelope on the server:
 
 ```bash
-target/debug/hive-core device add --name hive-laptop --pubkey-file ~/.ssh/hive_ed25519.pub
+target/debug/hive-core connect --host <public-host> --out envelope.json
 ```
 
-Generate a secrets template (client):
-
-```bash
-cargo run -p hive-desktop-cli secrets-template --profile profile.json > secrets.json
-```
-
-Fill `secrets.json` with:
-
-- `ssh_ed25519`: the **private key contents**.
-- `meta_password`, `s3_access_key`, `s3_secret_key`: values from `/opt/hive-core/.env`.
-
-Example:
-
-```json
-{
-  "keychain:hive-agents:profile/<id>/ssh_ed25519": "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n",
-  "keychain:hive-agents:profile/<id>/meta_password": "...",
-  "keychain:hive-agents:profile/<id>/s3_access_key": "...",
-  "keychain:hive-agents:profile/<id>/s3_secret_key": "..."
-}
-```
-
-Run the client supervisor:
+Run the client supervisor (pairs + connects in one step):
 
 ```bash
 cargo run -p hive-desktop-cli connect \
-  --profile profile.json \
-  --secrets secrets.json \
+  --envelope envelope.json \
   --mountpoint ~/Hive \
 ```
 
@@ -176,7 +148,8 @@ Use Ctrl+C to disconnect.
 - If the pinned fingerprint doesn't match the public SSH endpoint (SSH proxies,
   nonstandard host key paths), pass `--fingerprint` to override the scan result.
 - If pairing fails, check `docker compose logs pairing` and ensure HTTPS is
-  proxying to `127.0.0.1:8081`.
+  proxying to `127.0.0.1:8081` (or use the localhost HTTP URL when developing
+  on the same machine).
 - If `hive-core install` fails on Postgres, check:
   `docker compose logs postgres` in the install root.
 - If S3 writes fail, check:

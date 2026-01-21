@@ -3,17 +3,16 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use directories::{BaseDirs, ProjectDirs};
-use hive_desktop_core::{DesktopError, LogLine, SecretStore, Status, SupervisorConfig, SupervisorHandle};
-use hive_protocol::{
-    CacheSettings, LocalSettings, Mountpoint, PairError, PairRequest, PairResponse, PairingEnvelope,
-    Platform, Profile, ProfileId, RuntimeSettings,
+use hive_desktop_core::{
+    pair_envelope, DesktopError, LogLine, SecretStore, Status, SupervisorConfig, SupervisorHandle,
 };
-use reqwest::Client;
+use hive_protocol::{
+    CacheSettings, LocalSettings, Mountpoint, PairingEnvelope, Platform, Profile, ProfileId,
+    RuntimeSettings,
+};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
@@ -87,13 +86,6 @@ struct ProfileSummary {
     created_at: String,
 }
 
-#[derive(Debug, Serialize)]
-struct ProfileImportResult {
-    profile_id: String,
-    needs_authorization: bool,
-    device_public_key: Option<String>,
-}
-
 #[derive(Debug, Deserialize)]
 struct LocalSettingsPatch {
     mountpoint: Option<MountpointPatch>,
@@ -138,33 +130,18 @@ fn profiles_list(state: State<'_, AppState>) -> Result<Vec<ProfileSummary>, Stri
 async fn profile_import(
     state: State<'_, AppState>,
     json: String,
-) -> Result<ProfileImportResult, String> {
-    let parsed = parse_profile_payload(&json)?;
-    let (profile, pairing) = match parsed {
-        ProfilePayload::Envelope(env) => (env.profile.clone(), Some(env)),
-        ProfilePayload::Profile(profile) => (profile, None),
-    };
-    let device_name = default_device_name();
-    let (private_key, public_key) = generate_device_keypair(&device_name)?;
-    let public_key = public_key.trim().to_string();
+) -> Result<String, String> {
+    let envelope = parse_pairing_envelope(&json)?;
+    let profile = envelope.profile.clone();
+    let pairing = pair_envelope(&envelope, None)
+        .await
+        .map_err(|e| e.to_string())?;
 
-    let mut secrets = BTreeMap::new();
-    secrets.insert(profile.ssh.identity_key_ref.as_str().to_string(), private_key);
-
-    let mut needs_auth = true;
-    let mut device_public_key = Some(public_key.clone());
-
-    if let Some(pairing) = pairing.as_ref() {
-        let response = pair_with_core(pairing, &device_name, &public_key).await?;
-        if response.profile_id != profile.profile_id {
-            return Err("pairing response profile_id mismatch".to_string());
-        }
-        for (key, value) in response.secrets {
-            secrets.insert(key, value);
-        }
-        needs_auth = false;
-        device_public_key = None;
-    }
+    let mut secrets = pairing.response.secrets;
+    secrets.insert(
+        profile.ssh.identity_key_ref.as_str().to_string(),
+        pairing.device_private_key,
+    );
 
     let profile_id = profile.profile_id.clone();
     let profile_path = profile_path(&state.paths, &profile_id);
@@ -173,18 +150,12 @@ async fn profile_import(
     let secrets_path = secrets_path(&state.paths, &profile_id);
     merge_and_write_secrets(&secrets_path, secrets)?;
 
-    if let Some(pairing) = pairing {
-        let pairing_path = pairing_path(&state.paths, &profile_id);
-        write_pairing_envelope(&pairing_path, &pairing)?;
-    }
+    let pairing_path = pairing_path(&state.paths, &profile_id);
+    write_pairing_envelope(&pairing_path, &envelope)?;
 
     ensure_local_settings(&state.paths, &profile)?;
 
-    Ok(ProfileImportResult {
-        profile_id: profile_id.0.to_string(),
-        needs_authorization: needs_auth,
-        device_public_key,
-    })
+    Ok(profile_id.0.to_string())
 }
 
 #[tauri::command]
@@ -290,7 +261,7 @@ async fn connect(state: State<'_, AppState>, profile_id: String) -> Result<Strin
     let missing = missing_secrets(&profile, &secrets);
     if !missing.is_empty() {
         return Err(format!(
-            "missing secrets: {} (import a pairing envelope or add secrets manually)",
+            "missing secrets: {} (import a pairing envelope)",
             missing.join(", ")
         ));
     }
@@ -379,70 +350,14 @@ fn logs_tail(state: State<'_, AppState>, session_id: String, n: usize) -> Result
     Ok(entry.handle.logs_tail(n))
 }
 
-fn parse_profile_payload(payload: &str) -> Result<ProfilePayload, String> {
-    if let Ok(envelope) = serde_json::from_str::<PairingEnvelope>(payload) {
-        envelope
-            .profile
-            .validate()
-            .map_err(|e| format!("profile invalid: {e}"))?;
-        return Ok(ProfilePayload::Envelope(envelope));
-    }
-
-    let profile: Profile = serde_json::from_str(payload)
-        .map_err(|e| format!("invalid profile json: {e}"))?;
-    profile
+fn parse_pairing_envelope(payload: &str) -> Result<PairingEnvelope, String> {
+    let envelope: PairingEnvelope = serde_json::from_str(payload)
+        .map_err(|e| format!("invalid pairing envelope json: {e}"))?;
+    envelope
+        .profile
         .validate()
         .map_err(|e| format!("profile invalid: {e}"))?;
-    Ok(ProfilePayload::Profile(profile))
-}
-
-async fn pair_with_core(
-    envelope: &PairingEnvelope,
-    device_name: &str,
-    device_pubkey: &str,
-) -> Result<PairResponse, String> {
-    if envelope.pair_url.trim().is_empty() {
-        return Err("pair_url is missing".to_string());
-    }
-
-    let client = Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("failed to build http client: {e}"))?;
-
-    let request = PairRequest {
-        otp: envelope.otp.clone(),
-        device_name: device_name.to_string(),
-        device_pubkey: device_pubkey.trim().to_string(),
-    };
-
-    let response = client
-        .post(&envelope.pair_url)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|e| format!("pairing request failed: {e}"))?;
-
-    let status = response.status();
-    if status.is_success() {
-        return response
-            .json::<PairResponse>()
-            .await
-            .map_err(|e| format!("failed to parse pairing response: {e}"));
-    }
-
-    let body = response
-        .text()
-        .await
-        .unwrap_or_else(|_| String::new());
-    if let Ok(err) = serde_json::from_str::<PairError>(&body) {
-        return Err(format!("pairing failed: {} ({})", err.message, err.error));
-    }
-
-    Err(format!(
-        "pairing failed: http {}",
-        status.as_u16()
-    ))
+    Ok(envelope)
 }
 
 fn parse_profile_id(value: &str) -> Result<ProfileId, String> {
@@ -619,68 +534,6 @@ fn ensure_dir(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("failed to create {}: {e}", path.display()))
 }
 
-fn generate_device_keypair(comment: &str) -> Result<(String, String), String> {
-    let base = std::env::temp_dir();
-    let pid = std::process::id();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let mut key_path = None;
-    for attempt in 0..100 {
-        let candidate = base.join(format!("hive-agents-device-key-{pid}-{now}-{attempt}"));
-        if !candidate.exists() {
-            key_path = Some(candidate);
-            break;
-        }
-    }
-    let key_path = key_path.ok_or("failed to create temp key path")?;
-
-    let status = Command::new("ssh-keygen")
-        .arg("-t")
-        .arg("ed25519")
-        .arg("-f")
-        .arg(&key_path)
-        .arg("-N")
-        .arg("")
-        .arg("-C")
-        .arg(comment)
-        .status()
-        .map_err(|e| format!("ssh-keygen failed: {e}"))?;
-    if !status.success() {
-        return Err("ssh-keygen exited with error".to_string());
-    }
-
-    let private_key = fs::read_to_string(&key_path)
-        .map_err(|e| format!("failed to read {}: {e}", key_path.display()))?;
-    let public_key_path = key_path.with_extension("pub");
-    let public_key = fs::read_to_string(&public_key_path)
-        .map_err(|e| format!("failed to read {}: {e}", public_key_path.display()))?;
-
-    let _ = fs::remove_file(&key_path);
-    let _ = fs::remove_file(&public_key_path);
-
-    Ok((private_key, public_key))
-}
-
-fn default_device_name() -> String {
-    if let Ok(host) = hostname::get() {
-        if let Some(host) = host.to_str() {
-            return sanitize_device_name(host);
-        }
-    }
-    "hive-desktop".to_string()
-}
-
-fn sanitize_device_name(name: &str) -> String {
-    let joined = name.split_whitespace().collect::<Vec<_>>().join("-");
-    if joined.is_empty() {
-        "hive-desktop".to_string()
-    } else {
-        joined
-    }
-}
-
 struct FileSecretStore {
     secrets: BTreeMap<String, String>,
 }
@@ -699,11 +552,6 @@ impl SecretStore for FileSecretStore {
             secret.as_str()
         )))
     }
-}
-
-enum ProfilePayload {
-    Envelope(PairingEnvelope),
-    Profile(Profile),
 }
 
 fn main() {

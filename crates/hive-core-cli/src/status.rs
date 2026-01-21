@@ -59,7 +59,8 @@ pub fn run(opts: StatusOptions) -> Result<()> {
     println!("- ssh user: hive");
     println!("- forwards: 127.0.0.1:5432 (postgres), 127.0.0.1:8333 (s3)");
     println!("- profile envelope: hive-core connect --host <public-host>");
-    println!("- manual device add: hive-core device add --name <NAME> --pubkey-file <PATH>");
+    println!("- pairing endpoint: https://<host>/pair -> http://127.0.0.1:8081");
+    println!("- localhost pairing: http://localhost:8081/pair");
     Ok(())
 }
 

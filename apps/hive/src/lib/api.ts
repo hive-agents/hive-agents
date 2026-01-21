@@ -3,7 +3,6 @@ import type {
   LocalSettings,
   LocalSettingsPatch,
   LogLine,
-  ProfileImportResult,
   ProfileSummary,
   Status,
 } from './types'
@@ -12,10 +11,8 @@ export const profilesList = async (): Promise<ProfileSummary[]> => {
   return invoke<ProfileSummary[]>('profiles_list')
 }
 
-export const profileImport = async (
-  json: string,
-): Promise<ProfileImportResult> => {
-  return invoke<ProfileImportResult>('profile_import', { json })
+export const profileImport = async (json: string): Promise<string> => {
+  return invoke<string>('profile_import', { json })
 }
 
 export const profileExport = async (profileId: string): Promise<string> => {

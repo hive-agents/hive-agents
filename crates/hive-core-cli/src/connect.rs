@@ -167,8 +167,8 @@ pub fn run(opts: ConnectOptions) -> Result<()> {
     let otp = generate_hex_secret(32)?;
     let expires_at = Utc::now() + Duration::minutes(5);
     write_otp_record(&opts.root, &otp, &profile_id, expires_at)?;
-    // TODO: Allow overriding the HTTPS pairing host if SSH host differs.
-    let pair_url = format!("https://{}/pair", profile.ssh.host);
+    // TODO: Allow overriding the pairing host if SSH host differs.
+    let pair_url = pair_url_for_host(&profile.ssh.host);
 
     let envelope = PairingEnvelope {
         profile,
@@ -252,6 +252,18 @@ fn generate_hex_secret(bytes: usize) -> Result<String> {
         output.push_str(&format!("{:02x}", byte));
     }
     Ok(output)
+}
+
+fn pair_url_for_host(host: &str) -> String {
+    if is_localhost(host) {
+        format!("http://{}:8081/pair", host)
+    } else {
+        format!("https://{}/pair", host)
+    }
+}
+
+fn is_localhost(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
 fn read_env_file(path: &Path) -> Result<std::collections::HashMap<String, String>> {

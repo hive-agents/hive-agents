@@ -19,12 +19,11 @@ This document describes the current UI implementation, its data contracts, and h
 - Actions: paste JSON, `Need help?`, `Connect`.
 - Need help modal copy: `hive-core connect --host <public-host>`.
 - Copy button uses icon-only UI and flips to a green check after success.
+- The pasted JSON must be a pairing envelope (profile + OTP + pair URL).
 
 ### After import
 
-- A modal shows a spinner and an authorization command:
-  - `hive-core device add --name "<device-name>" --pubkey "<device-public-key>"`
-- This is a placeholder until the backend can provide the actual device public key.
+- The backend performs the OTP handshake and stores secrets automatically.
 
 ### Connected workspace
 
@@ -92,6 +91,6 @@ Tauri commands are invoked via `apps/hive/ui/src/lib/api.ts`. All args use snake
 
 ## Future integration hooks
 
-- Provide actual device public key and command for the authorization modal.
+- Add UI for re-running pairing if the OTP expires before import finishes.
 - Consider a `get_local_settings` default response for new profiles.
 - Add Tauri app icon using the hex logo in `src-tauri/icons`.

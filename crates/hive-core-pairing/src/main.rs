@@ -101,6 +101,7 @@ async fn pair_handler(
         }
     };
     // TODO: Add rate limiting and attempt tracking (per-IP or per-OTP).
+    let _ = cleanup_expired_otps(&state.otp_dir);
     let otp = payload.otp.trim();
     if otp.is_empty() {
         return error_response(
@@ -141,6 +142,7 @@ async fn pair_handler(
     };
 
     if record.otp != otp {
+        let _ = fs::remove_file(&record_path);
         return error_response(
             StatusCode::UNAUTHORIZED,
             "otp_invalid",
@@ -154,6 +156,21 @@ async fn pair_handler(
             StatusCode::UNAUTHORIZED,
             "otp_invalid",
             "OTP is invalid, expired, or already used",
+        );
+    }
+
+    if let Err(err) = fs::remove_file(&record_path) {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "otp_invalid",
+                "OTP is invalid, expired, or already used",
+            );
+        }
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            &format!("failed to remove otp file {}: {}", record_path.display(), err),
         );
     }
 
@@ -175,10 +192,6 @@ async fn pair_handler(
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &message);
     }
 
-    if let Err(err) = fs::remove_file(&record_path) {
-        eprintln!("warning: failed to remove otp file {}: {}", record_path.display(), err);
-    }
-
     let secrets = build_secret_map(&record.profile_id, &state.env);
     let response = PairResponse {
         profile_id: record.profile_id.clone(),
@@ -191,7 +204,7 @@ async fn pair_handler(
 fn parse_args() -> Result<Options> {
     let mut args: VecDeque<String> = env::args().skip(1).collect();
     let mut root = PathBuf::from("/opt/hive-core");
-    let mut listen = "0.0.0.0:8081".to_string();
+    let mut listen = "127.0.0.1:8081".to_string();
     let mut authorized_keys = PathBuf::from("/home/hive/.ssh/authorized_keys");
 
     while let Some(arg) = args.pop_front() {
@@ -221,7 +234,7 @@ fn print_usage() {
     println!("");
     println!("options:");
     println!("  --root <PATH>            hive-core root (default: /opt/hive-core)");
-    println!("  --listen <ADDR>          listen address (default: 0.0.0.0:8081)");
+    println!("  --listen <ADDR>          listen address (default: 127.0.0.1:8081)");
     println!("  --authorized-keys <PATH> authorized_keys path");
 }
 
@@ -286,6 +299,34 @@ fn load_otp_record(path: &Path) -> Result<Option<OtpRecord>> {
     let record: OtpRecord = serde_json::from_str(&content)
         .map_err(|e| format!("failed to parse otp record: {e}"))?;
     Ok(Some(record))
+}
+
+fn cleanup_expired_otps(dir: &Path) -> Result<()> {
+    let entries = fs::read_dir(dir)
+        .map_err(|e| format!("failed to read {}: {}", dir.display(), e))?;
+    let now = Utc::now();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+        let record: OtpRecord = match serde_json::from_str(&content) {
+            Ok(record) => record,
+            Err(_) => continue,
+        };
+        if now > record.expires_at {
+            let _ = fs::remove_file(&path);
+        }
+    }
+    Ok(())
 }
 
 fn normalize_pubkey(pubkey: &str) -> Result<String> {

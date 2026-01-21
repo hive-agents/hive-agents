@@ -45,18 +45,6 @@ const makeDefaultSettings = (platform: Platform): SettingsDraft => ({
   cacheSizeMiB: '10240',
 })
 
-const sanitizeDeviceName = (value: string): string => {
-  const cleaned = value.toLowerCase().replace(/[^a-z0-9]+/g, '-')
-  const trimmed = cleaned.replace(/^-+/, '').replace(/-+$/, '')
-  return trimmed.slice(0, 24) || 'hive-desktop'
-}
-
-const deriveDeviceName = (): string => {
-  if (typeof navigator === 'undefined') return 'hive-desktop'
-  const platform = navigator.platform || navigator.userAgent || 'hive-desktop'
-  return sanitizeDeviceName(platform)
-}
-
 const formatMaybe = (value: string | number | null | undefined): string => {
   if (value === null || value === undefined || value === '') {
     return '-'
@@ -109,18 +97,9 @@ const App = () => {
   const [settingsDrafts, setSettingsDrafts] = useState<
     Record<string, SettingsDraft>
   >({})
-  const [devicePublicKey, setDevicePublicKey] = useState<string | null>(null)
   const [showHelpModal, setShowHelpModal] = useState(false)
   const [showStatusModal, setShowStatusModal] = useState(false)
   const [showLogsModal, setShowLogsModal] = useState(false)
-  const [showAuthModal, setShowAuthModal] = useState(false)
-
-  const deviceName = useMemo(() => deriveDeviceName(), [])
-  const authCommand = useMemo(() => {
-    if (!devicePublicKey) return null
-    const sanitizedKey = devicePublicKey.trim()
-    return `hive-core device add --name "${deviceName}" --pubkey "${sanitizedKey}"`
-  }, [deviceName, devicePublicKey])
 
   const activeSettings = useMemo(() => {
     if (!selectedProfileId) return null
@@ -248,23 +227,12 @@ const App = () => {
     }
     try {
       setBusy('Importing profile...')
-      const result = await profileImport(importJson)
+      const profileId = await profileImport(importJson)
       const list = await profilesList()
       setProfiles(list)
-      setSelectedProfileId(result.profile_id)
+      setSelectedProfileId(profileId)
       setImportJson('')
       setNotice('Profile imported')
-      if (result.needs_authorization) {
-        if (!result.device_public_key) {
-          setError('Profile needs authorization but no device key was generated')
-        } else {
-          setDevicePublicKey(result.device_public_key)
-          setShowAuthModal(true)
-        }
-      } else {
-        setDevicePublicKey(null)
-        setShowAuthModal(false)
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Profile import failed')
     } finally {
@@ -646,26 +614,6 @@ const App = () => {
             command={HELP_COMMAND}
             onCopy={() => copyCommand(HELP_COMMAND)}
           />
-        </Modal>
-      )}
-
-      {showAuthModal && (
-        <Modal
-          title="Authorize this device"
-          onClose={() => setShowAuthModal(false)}
-        >
-          <div className="modal__stack">
-            <div className="spinner" aria-hidden="true" />
-            <p className="modal__text">
-              If pairing is unavailable, run this on the hive-core server to authorize this device.
-            </p>
-            {authCommand && (
-              <CommandBlock
-                command={authCommand}
-                onCopy={() => copyCommand(authCommand)}
-              />
-            )}
-          </div>
         </Modal>
       )}
 

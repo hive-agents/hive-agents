@@ -19,15 +19,11 @@ This document describes the current UI implementation, its data contracts, and h
 - Actions: paste JSON, `Need help?`, `Connect`.
 - Need help modal copy: `hive-core connect --host <public-host>`.
 - Copy button uses icon-only UI and flips to a green check after success.
-- The pasted JSON may be a pairing envelope (profile + OTP + pair URL).
+- The pasted JSON must be a pairing envelope (profile + OTP + pair URL).
 
 ### After import
 
-- If the pasted JSON is a pairing envelope, the backend performs the OTP
-  handshake and stores secrets automatically (no manual step).
-- If the pasted JSON is a plain profile (no OTP), the modal shows the manual
-  authorization command:
-  - `hive-core device add --name "<device-name>" --pubkey "<device-public-key>"`
+- The backend performs the OTP handshake and stores secrets automatically.
 
 ### Connected workspace
 
@@ -42,8 +38,7 @@ Tauri commands are invoked via `apps/hive/src/lib/api.ts`. All args use snake_ca
 
 - `profiles_list() -> ProfileSummary[]`
   - `ProfileSummary { profile_id, display_name, created_at }`
-- `profile_import({ json }) -> ProfileImportResult`
-  - `ProfileImportResult { profile_id, needs_authorization, device_public_key }`
+- `profile_import({ json }) -> profile_id`
 - `profile_export({ profile_id }) -> json` (not currently used by UI)
 - `get_local_settings({ profile_id }) -> LocalSettings`
 - `set_local_settings({ profile_id, patch }) -> void`

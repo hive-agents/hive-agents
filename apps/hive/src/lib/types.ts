@@ -4,12 +4,6 @@ export type ProfileSummary = {
   created_at: string
 }
 
-export type ProfileImportResult = {
-  profile_id: string
-  needs_authorization: boolean
-  device_public_key?: string | null
-}
-
 export type Platform = 'macos' | 'linux' | 'windows'
 
 export type Status = {

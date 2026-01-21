@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.hive-agents.hive",
   "build": {
-    "beforeBuildCommand": "npm --prefix ../ui run build",
-    "beforeDevCommand": "npm --prefix ../ui run dev -- --host",
+    "beforeBuildCommand": "npm --prefix ../ui install && npm --prefix ../ui run build",
+    "beforeDevCommand": "npm --prefix ../ui install && npm --prefix ../ui run dev -- --host",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../ui/dist"
   },

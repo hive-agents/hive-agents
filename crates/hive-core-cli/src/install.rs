@@ -534,6 +534,6 @@ fn print_install_hints(root: &Path) -> Result<()> {
     println!("- export a pairing envelope: hive-core connect --host <public-host>");
     println!("- share the SSH host key fingerprint from: hive-core fingerprint");
     println!("- configure Caddy to proxy https://<host>/pair to http://127.0.0.1:8081");
-    println!("- manual device add (fallback): hive-core device add --name <NAME> --pubkey-file <PATH>");
+    println!("- for localhost dev, use http://localhost:8081/pair");
     Ok(())
 }

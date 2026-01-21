@@ -1,58 +1,24 @@
 # Pairing and Connection Protocols
 
-This document captures the current OTP-based pairing flow (HTTPS) and the
-manual SSH-only fallback. It also lists
-integration points for future work.
+This document captures the OTP-based pairing flow and its integration points.
 
-## Manual fallback protocol (SSH-only, manual approval)
-
-Assumptions:
-- No web control plane or pairing API.
-- Exported profiles are non-secret and shareable.
-- Device access is explicitly approved by the server owner via `authorized_keys`.
-
-Actors:
-- Server owner (admin) with shell access to hive-core.
-- Hive client running on a device.
-
-Steps:
-1. Server owner installs the stack:
-   - `hive-core install`
-2. Server owner exports a non-secret connection profile:
-   - `hive-core connect --host <public-host>`
-   - The JSON includes SSH host/port, tunnel layout, JuiceFS templates, and
-     `SecretRef` placeholders for secrets.
-3. Hive imports the profile and uses TOFU for the SSH host key (accepts first
-   key, fails if it changes later).
-4. Hive generates a per-device SSH keypair and shows a command:
-   - `hive-core device add --name <device> --pubkey "<ssh-ed25519 ...>"`
-5. Server owner runs the `device add` command, which appends a restricted key to
-   `/home/hive/.ssh/authorized_keys` with forwarding-only options.
-6. Hive prompts for secrets (Postgres password, S3 keys) and stores them in the
-   OS keychain at the profile's `SecretRef` paths.
-7. Hive opens SSH tunnels and mounts JuiceFS using the profile templates.
-
-Security properties:
-- A leaked profile does not grant access (no secrets; SSH key still required).
-- Access is gated by manual key approval.
-- SSH host key pinning (TOFU) protects against MITM after the first connect.
-
-## Current MVP protocol (OTP with HTTPS endpoint)
+## Current protocol (OTP pairing)
 
 Status: implemented.
 
 This flow makes the "enter OTP" step meaningful by allowing Hive to register a
-device key without manual `device add`. It requires a minimal HTTPS pairing
+device key without manual `device add`. It requires a minimal HTTP(S) pairing
 endpoint on hive-core.
 
 Requirements:
-- HTTPS endpoint on hive-core (self-signed or real cert).
+- HTTPS endpoint on hive-core for non-local hosts (self-signed or real cert).
+- Localhost pairing may use HTTP without TLS.
 - OTP is high-entropy (not a short numeric code) and single-use.
 - OTP is bundled alongside the non-secret connection info and expires quickly
   (target: 5 minutes).
 - OTP is intended for machine exchange, not manual entry.
 - Rate limiting, short TTL, and attempt limits for OTP validation.
-- Hive verifies the HTTPS server identity (pinning or trusted CA).
+- Hive verifies the HTTPS server identity (pinning or trusted CA) for non-local hosts.
 - The pairing service is started by `hive-core install` and listens on
   `127.0.0.1:8081` by default (typically proxied by Caddy).
 
@@ -65,8 +31,9 @@ Pairing envelope (JSON output from `hive-core connect`):
   "pair_url": "https://<public-host>/pair"
 }
 ```
+For localhost, the pairing URL is `http://localhost:8081/pair`.
 
-Pairing API (HTTPS, JSON):
+Pairing API (HTTP(S), JSON):
 
 `POST /pair`
 
@@ -181,20 +148,21 @@ Steps:
    - `hive-core connect --host <public-host>` prints the envelope JSON.
 2. Hive imports the profile, generates a device keypair, and pins the SSH host key.
 3. Hive sends the OTP and device pubkey:
-   - `POST https://<host>/pair`
+   - `POST http(s)://<host>/pair`
    - payload: { otp, device_name, device_pubkey }
 4. hive-core validates the OTP (TTL, one-time, rate-limited), writes the key
    to `authorized_keys` with strict forwarding-only options, and returns the
-   required secrets over HTTPS (keyed by `SecretRef`).
+   required secrets over HTTP(S) (keyed by `SecretRef`).
 5. Hive stores the secrets locally and connects over SSH as in the MVP flow.
 
 Notes:
 - HTTPS termination can be handled by Caddy (or equivalent) serving the pairing
   endpoint on the same host. The pairing service listens on `127.0.0.1:8081`
   by default.
-- If using a self-signed HTTPS cert, the profile should include a pinned
-  certificate fingerprint or CA bundle. Without this, the pairing endpoint is
-  vulnerable to MITM.
+- For localhost dev, use `http://localhost:8081/pair` (no TLS required).
+- If using a self-signed HTTPS cert for non-local hosts, the profile should
+  include a pinned certificate fingerprint or CA bundle. Without this, the
+  pairing endpoint is vulnerable to MITM.
 - A short numeric OTP is not sufficient if the endpoint is internet-reachable.
 
 ## Integration points and future work
@@ -207,18 +175,16 @@ Profile schema (hive-protocol):
 hive-core CLI:
 - `connect` builds a profile using values from `/opt/hive-core/.env`.
 - `connect` should emit the pairing envelope (profile + OTP + expiry + pair_url).
-- `device add` appends to `/home/hive/.ssh/authorized_keys` with:
-  `no-pty,no-agent-forwarding,no-X11-forwarding,permitopen="127.0.0.1:5432",permitopen="127.0.0.1:8333"`.
 - `fingerprint` uses the host SSH key and must be shown to the client to pin.
 
 Hive desktop core:
 - Must use TOFU host key pinning (accept new, fail on change).
-- Must prompt for secrets if `SecretRef` values are missing.
+- Missing secrets should surface as a connect error.
 - Uses `tunnels` + `dsn_template` + `bucket_url_template` to build runtime
   connection strings.
 
 Possible future changes:
-- Add rate limiting and OTP cleanup (currently TODO in the pairing service).
+- Add rate limiting (OTP cleanup is handled in the pairing service).
 - Add profile fields for HTTPS cert pinning or pairing endpoint URL.
 - Support BYO S3 by setting `EndpointMode::Direct` and removing the S3 tunnel.
 - Add device listing and removal commands backed by a registry file or API.

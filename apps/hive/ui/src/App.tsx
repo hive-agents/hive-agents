@@ -45,18 +45,6 @@ const makeDefaultSettings = (platform: Platform): SettingsDraft => ({
   cacheSizeMiB: '10240',
 })
 
-const sanitizeDeviceName = (value: string): string => {
-  const cleaned = value.toLowerCase().replace(/[^a-z0-9]+/g, '-')
-  const trimmed = cleaned.replace(/^-+/, '').replace(/-+$/, '')
-  return trimmed.slice(0, 24) || 'hive-desktop'
-}
-
-const deriveDeviceName = (): string => {
-  if (typeof navigator === 'undefined') return 'hive-desktop'
-  const platform = navigator.platform || navigator.userAgent || 'hive-desktop'
-  return sanitizeDeviceName(platform)
-}
-
 const formatMaybe = (value: string | number | null | undefined): string => {
   if (value === null || value === undefined || value === '') {
     return '-'
@@ -112,14 +100,6 @@ const App = () => {
   const [showHelpModal, setShowHelpModal] = useState(false)
   const [showStatusModal, setShowStatusModal] = useState(false)
   const [showLogsModal, setShowLogsModal] = useState(false)
-  const [showAuthModal, setShowAuthModal] = useState(false)
-
-  const deviceName = useMemo(() => deriveDeviceName(), [])
-  const authCommand = useMemo(
-    () =>
-      `hive-core device add --name "${deviceName}" --pubkey "<device-public-key>"`,
-    [deviceName],
-  )
 
   const activeSettings = useMemo(() => {
     if (!selectedProfileId) return null
@@ -253,7 +233,6 @@ const App = () => {
       setSelectedProfileId(profileId)
       setImportJson('')
       setNotice('Profile imported')
-      setShowAuthModal(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Profile import failed')
     } finally {
@@ -635,24 +614,6 @@ const App = () => {
             command={HELP_COMMAND}
             onCopy={() => copyCommand(HELP_COMMAND)}
           />
-        </Modal>
-      )}
-
-      {showAuthModal && (
-        <Modal
-          title="Authorize this device"
-          onClose={() => setShowAuthModal(false)}
-        >
-          <div className="modal__stack">
-            <div className="spinner" aria-hidden="true" />
-            <p className="modal__text">
-              Run this command on the hive-core server to authorize this device.
-            </p>
-            <CommandBlock
-              command={authCommand}
-              onCopy={() => copyCommand(authCommand)}
-            />
-          </div>
         </Modal>
       )}
 
