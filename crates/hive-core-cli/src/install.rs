@@ -309,6 +309,7 @@ fn set_env_permissions(path: &Path) -> Result<()> {
 fn ensure_s3_config(root: &Path, env: &EnvConfig, force: bool) -> Result<()> {
     let config_path = root.join("state").join("seaweedfs").join("s3.json");
     if config_path.exists() && !force {
+        set_s3_config_permissions(&config_path)?;
         return Ok(());
     }
 
@@ -331,15 +332,15 @@ fn ensure_s3_config(root: &Path, env: &EnvConfig, force: bool) -> Result<()> {
         .map_err(|e| err(format!("failed to serialize s3 config: {}", e)))?;
     fs::write(&config_path, content)
         .map_err(|e| err(format!("failed to write {}: {}", config_path.display(), e)))?;
-    set_secret_permissions(&config_path)?;
+    set_s3_config_permissions(&config_path)?;
     Ok(())
 }
 
-fn set_secret_permissions(path: &Path) -> Result<()> {
+fn set_s3_config_permissions(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let perms = fs::Permissions::from_mode(0o600);
+        let perms = fs::Permissions::from_mode(0o644);
         fs::set_permissions(path, perms)
             .map_err(|e| err(format!("failed to set permissions on {}: {}", path.display(), e)))?;
     }
