@@ -84,6 +84,7 @@ pub fn run(opts: InstallOptions) -> Result<()> {
     }
 
     prepare_dirs(&opts.root)?;
+    ensure_hive_authorized_keys()?;
     write_compose(&opts.root, opts.force, opts.replace_existing)?;
     warn_if_compose_outdated(&opts.root, opts.force)?;
 
@@ -100,6 +101,122 @@ pub fn run(opts: InstallOptions) -> Result<()> {
     }
 
     print_install_hints(&opts.root)?;
+    Ok(())
+}
+
+fn ensure_hive_authorized_keys() -> Result<()> {
+    #[cfg(unix)]
+    {
+        let user = ensure_user("hive")?;
+        let home_dir = PathBuf::from("/home/hive");
+        let ssh_dir = home_dir.join(".ssh");
+        let keys_path = ssh_dir.join("authorized_keys");
+
+        fs::create_dir_all(&ssh_dir)
+            .map_err(|e| err(format!("failed to create {}: {}", ssh_dir.display(), e)))?;
+        if !keys_path.exists() {
+            fs::write(&keys_path, "")
+                .map_err(|e| err(format!("failed to write {}: {}", keys_path.display(), e)))?;
+        }
+
+        set_permissions(&home_dir, 0o755)?;
+        set_permissions(&ssh_dir, 0o700)?;
+        set_permissions(&keys_path, 0o600)?;
+        chown_path(&home_dir, user.uid, user.gid)?;
+        chown_path(&ssh_dir, user.uid, user.gid)?;
+        chown_path(&keys_path, user.uid, user.gid)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+struct UserRecord {
+    uid: u32,
+    gid: u32,
+}
+
+#[cfg(unix)]
+fn ensure_user(name: &str) -> Result<UserRecord> {
+    if let Some(user) = lookup_user(name)? {
+        return Ok(user);
+    }
+
+    let status = Command::new("useradd")
+        .arg("-m")
+        .arg("-s")
+        .arg("/bin/bash")
+        .arg(name)
+        .status();
+    let needs_fallback = match status {
+        Ok(status) => !status.success(),
+        Err(_) => true,
+    };
+    if needs_fallback {
+        let status = Command::new("adduser")
+            .arg("--disabled-password")
+            .arg("--gecos")
+            .arg("")
+            .arg(name)
+            .status()
+            .map_err(|e| err(format!("failed to run adduser: {}", e)))?;
+        if !status.success() {
+            return Err(err("failed to create hive user (useradd/adduser failed)"));
+        }
+    }
+
+    lookup_user(name)?.ok_or_else(|| err("failed to load hive user after create"))
+}
+
+#[cfg(unix)]
+fn lookup_user(name: &str) -> Result<Option<UserRecord>> {
+    let contents = fs::read_to_string("/etc/passwd")
+        .map_err(|e| err(format!("failed to read /etc/passwd: {}", e)))?;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let mut parts = trimmed.split(':');
+        let user = parts.next().unwrap_or("");
+        if user != name {
+            continue;
+        }
+        let _password = parts.next();
+        let uid_str = parts.next().unwrap_or("");
+        let gid_str = parts.next().unwrap_or("");
+        let uid = uid_str
+            .parse::<u32>()
+            .map_err(|_| err("failed to parse hive uid"))?;
+        let gid = gid_str
+            .parse::<u32>()
+            .map_err(|_| err("failed to parse hive gid"))?;
+        return Ok(Some(UserRecord { uid, gid }));
+    }
+    Ok(None)
+}
+
+fn set_permissions(path: &Path, mode: u32) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(mode);
+        fs::set_permissions(path, perms)
+            .map_err(|e| err(format!("failed to set permissions on {}: {}", path.display(), e)))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn chown_path(path: &Path, uid: u32, gid: u32) -> Result<()> {
+    let spec = format!("{}:{}", uid, gid);
+    let status = Command::new("chown")
+        .arg(spec)
+        .arg(path)
+        .status()
+        .map_err(|e| err(format!("failed to run chown: {}", e)))?;
+    if !status.success() {
+        return Err(err(format!("failed to chown {}", path.display())));
+    }
     Ok(())
 }
 
