@@ -18,6 +18,11 @@ pub struct DeviceRemoveOptions {
     pub authorized_keys: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct DeviceListOptions {
+    pub authorized_keys: PathBuf,
+}
+
 pub fn parse_add_args(args: &mut VecDeque<String>) -> Result<DeviceAddOptions> {
     let mut name = None;
     let mut pubkey = None;
@@ -88,6 +93,21 @@ pub fn parse_remove_args(args: &mut VecDeque<String>) -> Result<DeviceRemoveOpti
     })
 }
 
+pub fn parse_list_args(args: &mut VecDeque<String>) -> Result<DeviceListOptions> {
+    let mut authorized_keys = PathBuf::from("/home/hive/.ssh/authorized_keys");
+
+    while let Some(arg) = args.pop_front() {
+        match arg.as_str() {
+            "--authorized-keys" => {
+                authorized_keys = PathBuf::from(take_value(args, "--authorized-keys")?)
+            }
+            _ => return Err(err(format!("unknown device ls flag: {}", arg))),
+        }
+    }
+
+    Ok(DeviceListOptions { authorized_keys })
+}
+
 pub fn add_device(opts: DeviceAddOptions) -> Result<()> {
     ensure_parent_dir(&opts.authorized_keys)?;
 
@@ -152,6 +172,34 @@ pub fn remove_device(opts: DeviceRemoveOptions) -> Result<()> {
     Ok(())
 }
 
+pub fn list_devices(opts: DeviceListOptions) -> Result<()> {
+    if !opts.authorized_keys.exists() {
+        println!("no devices");
+        return Ok(());
+    }
+
+    let existing = fs::read_to_string(&opts.authorized_keys)
+        .map_err(|e| err(format!("failed to read {}: {}", opts.authorized_keys.display(), e)))?;
+
+    let mut names: Vec<String> = existing
+        .lines()
+        .filter_map(|line| extract_device_name(line))
+        .collect();
+
+    names.sort();
+    names.dedup();
+
+    if names.is_empty() {
+        println!("no devices");
+        return Ok(());
+    }
+
+    for name in names {
+        println!("{}", name);
+    }
+    Ok(())
+}
+
 fn normalize_pubkey(pubkey: &str) -> Result<String> {
     let trimmed = pubkey.trim();
     if trimmed.contains('\n') {
@@ -165,6 +213,25 @@ fn normalize_pubkey(pubkey: &str) -> Result<String> {
         return Err(err("pubkey is missing key data"));
     }
     Ok(trimmed.to_string())
+}
+
+fn extract_device_name(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let marker = "hive-device=";
+    let idx = trimmed.find(marker)?;
+    let rest = &trimmed[idx + marker.len()..];
+    let end = rest
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(rest.len());
+    let name = &rest[..end];
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
 }
 
 fn ensure_parent_dir(path: &Path) -> Result<()> {

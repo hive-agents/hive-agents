@@ -82,6 +82,10 @@ fn run_device(mut args: VecDeque<String>) -> util::Result<()> {
             let opts = device::parse_remove_args(&mut args)?;
             device::remove_device(opts)
         }
+        "ls" | "list" => {
+            let opts = device::parse_list_args(&mut args)?;
+            device::list_devices(opts)
+        }
         _ => Err(util::err(format!("unknown device subcommand: {}", sub))),
     }
 }
@@ -122,7 +126,7 @@ fn print_status_usage() {
 }
 
 fn print_device_usage() {
-    println!("hive-core device <add|remove> [options]");
+    println!("hive-core device <add|remove|ls> [options]");
     println!("");
     println!("device add options:");
     println!("  --name <NAME>                device name (no spaces)");
@@ -132,6 +136,9 @@ fn print_device_usage() {
     println!("");
     println!("device remove options:");
     println!("  --name <NAME>                device name (no spaces)");
+    println!("  --authorized-keys <PATH>     authorized_keys path");
+    println!("");
+    println!("device ls options:");
     println!("  --authorized-keys <PATH>     authorized_keys path");
 }
 

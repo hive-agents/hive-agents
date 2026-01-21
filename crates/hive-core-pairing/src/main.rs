@@ -24,6 +24,7 @@ struct Options {
     root: PathBuf,
     listen: String,
     authorized_keys: PathBuf,
+    replace_existing: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +39,7 @@ struct AppState {
     otp_dir: PathBuf,
     authorized_keys: PathBuf,
     env: EnvConfig,
+    replace_existing: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,6 +68,7 @@ async fn run() -> Result<()> {
         otp_dir,
         authorized_keys: opts.authorized_keys.clone(),
         env: env_config,
+        replace_existing: opts.replace_existing,
     });
 
     let app = Router::new()
@@ -276,18 +279,50 @@ async fn pair_handler(
 
     match device_name_exists(&state.authorized_keys, &payload.device_name) {
         Ok(true) => {
-            log_reject(
-                remote_addr,
-                "device_name_exists",
-                Some("device_name already exists"),
-                Some(otp),
-                Some(&payload.device_name),
-            );
-            return error_response(
-                StatusCode::CONFLICT,
-                "device_name_exists",
-                "device_name already exists",
-            )
+            if state.replace_existing {
+                if let Err(message) =
+                    remove_device_key(&state.authorized_keys, &payload.device_name)
+                {
+                    log_event(
+                        "error",
+                        "pair_error",
+                        &[
+                            ("remote_addr", serde_json::json!(remote_addr.to_string())),
+                            (
+                                "reason",
+                                serde_json::json!("authorized_keys_replace_failed"),
+                            ),
+                            ("error", serde_json::json!(message)),
+                        ],
+                    );
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal_error",
+                        &message,
+                    );
+                }
+                log_event(
+                    "info",
+                    "device_replace",
+                    &[
+                        ("remote_addr", serde_json::json!(remote_addr.to_string())),
+                        ("device_name", serde_json::json!(payload.device_name)),
+                    ],
+                );
+            } else {
+                log_reject(
+                    remote_addr,
+                    "device_name_exists",
+                    Some("device_name already exists"),
+                    Some(otp),
+                    Some(&payload.device_name),
+                );
+                return error_response(
+                    StatusCode::CONFLICT,
+                    "device_name_exists",
+                    "device_name already exists",
+                );
+            }
         }
         Ok(false) => {}
         Err(message) => {
@@ -300,7 +335,7 @@ async fn pair_handler(
                     ("error", serde_json::json!(message)),
                 ],
             );
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &message)
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &message);
         }
     }
 
@@ -340,6 +375,7 @@ fn parse_args() -> Result<Options> {
     let mut root = PathBuf::from("/opt/hive-core");
     let mut listen = "127.0.0.1:8081".to_string();
     let mut authorized_keys = PathBuf::from("/home/hive/.ssh/authorized_keys");
+    let mut replace_existing = false;
 
     while let Some(arg) = args.pop_front() {
         match arg.as_str() {
@@ -348,6 +384,7 @@ fn parse_args() -> Result<Options> {
             "--authorized-keys" => {
                 authorized_keys = PathBuf::from(take_value(&mut args, "--authorized-keys")?)
             }
+            "--replace-existing" => replace_existing = true,
             "-h" | "--help" => {
                 print_usage();
                 std::process::exit(0);
@@ -360,6 +397,7 @@ fn parse_args() -> Result<Options> {
         root,
         listen,
         authorized_keys,
+        replace_existing,
     })
 }
 
@@ -370,6 +408,7 @@ fn print_usage() {
     println!("  --root <PATH>            hive-core root (default: /opt/hive-core)");
     println!("  --listen <ADDR>          listen address (default: 127.0.0.1:8081)");
     println!("  --authorized-keys <PATH> authorized_keys path");
+    println!("  --replace-existing       replace existing device key with same name");
 }
 
 fn take_value(args: &mut VecDeque<String>, flag: &str) -> Result<String> {
@@ -556,6 +595,31 @@ fn add_device_key(authorized_keys: &Path, name: &str, pubkey: &str) -> Result<()
         .map_err(|e| format!("failed to write {}: {}", authorized_keys.display(), e))?;
 
     set_key_permissions(authorized_keys)?;
+    Ok(())
+}
+
+fn remove_device_key(authorized_keys: &Path, name: &str) -> Result<()> {
+    if !authorized_keys.exists() {
+        return Ok(());
+    }
+    let token = format!("hive-device={name}");
+    let existing = fs::read_to_string(authorized_keys)
+        .map_err(|e| format!("failed to read {}: {}", authorized_keys.display(), e))?;
+    let mut kept = String::new();
+    let mut removed = false;
+    for line in existing.lines() {
+        if line.contains(&token) {
+            removed = true;
+            continue;
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    if removed {
+        fs::write(authorized_keys, kept)
+            .map_err(|e| format!("failed to write {}: {}", authorized_keys.display(), e))?;
+        set_key_permissions(authorized_keys)?;
+    }
     Ok(())
 }
 
