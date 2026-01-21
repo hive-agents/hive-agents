@@ -19,6 +19,7 @@ pub struct InstallOptions {
     pub force: bool,
     pub skip_up: bool,
     pub skip_format: bool,
+    pub replace_existing: bool,
     pub bucket: String,
     pub volume: String,
     pub postgres_user: String,
@@ -43,6 +44,7 @@ pub fn parse_args(args: &mut VecDeque<String>) -> Result<InstallOptions> {
         force: false,
         skip_up: false,
         skip_format: false,
+        replace_existing: false,
         bucket: "hive".to_string(),
         volume: "hive".to_string(),
         postgres_user: "juicefs".to_string(),
@@ -56,6 +58,7 @@ pub fn parse_args(args: &mut VecDeque<String>) -> Result<InstallOptions> {
             "--force" => opts.force = true,
             "--skip-up" => opts.skip_up = true,
             "--skip-format" => opts.skip_format = true,
+            "--replace-existing" => opts.replace_existing = true,
             "--bucket" => opts.bucket = take_value(args, "--bucket")?,
             "--volume" => opts.volume = take_value(args, "--volume")?,
             "--postgres-user" => opts.postgres_user = take_value(args, "--postgres-user")?,
@@ -81,7 +84,7 @@ pub fn run(opts: InstallOptions) -> Result<()> {
     }
 
     prepare_dirs(&opts.root)?;
-    write_compose(&opts.root, opts.force)?;
+    write_compose(&opts.root, opts.force, opts.replace_existing)?;
     warn_if_compose_outdated(&opts.root, opts.force)?;
 
     let env_config = ensure_env(&opts.root, &opts)?;
@@ -119,13 +122,31 @@ fn prepare_dirs(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn write_compose(root: &Path, force: bool) -> Result<()> {
+fn write_compose(root: &Path, force: bool, replace_existing: bool) -> Result<()> {
     let compose_path = root.join("compose.yml");
     if compose_path.exists() && !force {
+        if replace_existing {
+            return Err(err(
+                "compose.yml already exists; rerun with --force to enable --replace-existing",
+            ));
+        }
         return Ok(());
     }
 
-    fs::write(&compose_path, COMPOSE_TEMPLATE)
+    let mut content = COMPOSE_TEMPLATE.to_string();
+    if replace_existing && !content.contains("--replace-existing") {
+        let needle = "        \"--authorized-keys\",\n";
+        let replacement = "        \"--replace-existing\",\n        \"--authorized-keys\",\n";
+        if content.contains(needle) {
+            content = content.replacen(needle, replacement, 1);
+        } else {
+            return Err(err(
+                "compose template missing pairing --authorized-keys entry",
+            ));
+        }
+    }
+
+    fs::write(&compose_path, content)
         .map_err(|e| err(format!("failed to write {}: {}", compose_path.display(), e)))?;
     Ok(())
 }
