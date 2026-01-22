@@ -56,11 +56,11 @@ pub fn run(opts: StatusOptions) -> Result<()> {
     }
 
     println!("connection hints:");
-    println!("- ssh user: hive");
+    println!("- ssh user: hivec");
     println!("- forwards: 127.0.0.1:5432 (postgres), 127.0.0.1:8333 (s3)");
-    println!("- profile envelope: hive-core connect --host <public-host>");
-    println!("- pairing endpoint: https://<host>/pair -> http://127.0.0.1:8081");
-    println!("- localhost pairing: http://localhost:8081/pair");
+    println!("- profile envelope: hive-core connect --host <public-host> --user hivec");
+    println!("- pairing endpoint: https://<host>/hive-pair -> http://127.0.0.1:8081");
+    println!("- localhost pairing: http://localhost:8081/hive-pair");
     Ok(())
 }
 

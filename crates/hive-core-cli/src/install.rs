@@ -88,7 +88,7 @@ pub fn run(opts: InstallOptions) -> Result<()> {
     }
 
     prepare_dirs(&opts.root)?;
-    ensure_hive_authorized_keys()?;
+    ensure_device_authorized_keys()?;
     write_compose(&opts.root, opts.force, opts.replace_existing)?;
     warn_if_compose_outdated(&opts.root, opts.force)?;
 
@@ -112,14 +112,25 @@ pub fn run(opts: InstallOptions) -> Result<()> {
     Ok(())
 }
 
-fn ensure_hive_authorized_keys() -> Result<()> {
+fn ensure_device_authorized_keys() -> Result<()> {
     #[cfg(unix)]
     {
-        let user = ensure_user("hive")?;
-        let home_dir = PathBuf::from("/home/hive");
+        let home_dir = PathBuf::from("/home/hivec");
         let ssh_dir = home_dir.join(".ssh");
         let keys_path = ssh_dir.join("authorized_keys");
 
+        if !running_as_root() {
+            if keys_path.exists() {
+                return Ok(());
+            }
+            eprintln!(
+                "warning: {} missing; create it with provisioning or run as root",
+                keys_path.display()
+            );
+            return Ok(());
+        }
+
+        let user = ensure_user("hivec", no_login_shell())?;
         fs::create_dir_all(&ssh_dir)
             .map_err(|e| err(format!("failed to create {}: {}", ssh_dir.display(), e)))?;
         if !keys_path.exists() {
@@ -144,7 +155,7 @@ struct UserRecord {
 }
 
 #[cfg(unix)]
-fn ensure_user(name: &str) -> Result<UserRecord> {
+fn ensure_user(name: &str, shell: &str) -> Result<UserRecord> {
     if let Some(user) = lookup_user(name)? {
         return Ok(user);
     }
@@ -152,7 +163,7 @@ fn ensure_user(name: &str) -> Result<UserRecord> {
     let status = Command::new("useradd")
         .arg("-m")
         .arg("-s")
-        .arg("/bin/bash")
+        .arg(shell)
         .arg(name)
         .status();
     let needs_fallback = match status {
@@ -164,15 +175,29 @@ fn ensure_user(name: &str) -> Result<UserRecord> {
             .arg("--disabled-password")
             .arg("--gecos")
             .arg("")
+            .arg("--shell")
+            .arg(shell)
             .arg(name)
             .status()
             .map_err(|e| err(format!("failed to run adduser: {}", e)))?;
         if !status.success() {
-            return Err(err("failed to create hive user (useradd/adduser failed)"));
+            return Err(err(format!(
+                "failed to create user {} (useradd/adduser failed)",
+                name
+            )));
         }
     }
 
-    lookup_user(name)?.ok_or_else(|| err("failed to load hive user after create"))
+    lookup_user(name)?.ok_or_else(|| err(format!("failed to load user {} after create", name)))
+}
+
+#[cfg(unix)]
+fn no_login_shell() -> &'static str {
+    if Path::new("/usr/sbin/nologin").exists() {
+        "/usr/sbin/nologin"
+    } else {
+        "/bin/false"
+    }
 }
 
 #[cfg(unix)]
@@ -194,10 +219,10 @@ fn lookup_user(name: &str) -> Result<Option<UserRecord>> {
         let gid_str = parts.next().unwrap_or("");
         let uid = uid_str
             .parse::<u32>()
-            .map_err(|_| err("failed to parse hive uid"))?;
+            .map_err(|_| err("failed to parse uid"))?;
         let gid = gid_str
             .parse::<u32>()
-            .map_err(|_| err("failed to parse hive gid"))?;
+            .map_err(|_| err("failed to parse gid"))?;
         return Ok(Some(UserRecord { uid, gid }));
     }
     Ok(None)
@@ -555,7 +580,7 @@ fn connect_and_mount(opts: &InstallOptions) -> Result<()> {
         root: opts.root.clone(),
         host: Some("127.0.0.1".to_string()),
         port: 22,
-        user: "hive".to_string(),
+        user: "hivec".to_string(),
         display_name: "Hive".to_string(),
         out: Some(envelope_path.clone()),
         pretty: false,
@@ -703,7 +728,7 @@ fn ensure_mountpoint(path: &Path) -> Result<()> {
         .map_err(|e| err(format!("failed to create {}: {}", path.display(), e)))?;
     #[cfg(unix)]
     {
-        let user = ensure_user("hive")?;
+        let user = ensure_user("hive", "/bin/bash")?;
         set_permissions(path, 0o755)?;
         chown_path(path, user.uid, user.gid)?;
     }
@@ -860,9 +885,9 @@ fn print_install_hints(root: &Path, skip_connect: bool) -> Result<()> {
         );
         println!("- rerun with --skip-connect to disable local mount");
     }
-    println!("- export a pairing envelope: hive-core connect --host <public-host>");
+    println!("- export a pairing envelope: hive-core connect --host <public-host> --user hivec");
     println!("- share the SSH host key fingerprint from: hive-core fingerprint");
-    println!("- configure Caddy to proxy https://<host>/pair to http://127.0.0.1:8081");
-    println!("- for localhost dev, use http://localhost:8081/pair");
+    println!("- configure Caddy to proxy https://<host>/hive-pair to http://127.0.0.1:8081");
+    println!("- for localhost dev, use http://localhost:8081/hive-pair");
     Ok(())
 }

@@ -23,20 +23,27 @@ Requirements:
 - The pairing service is started by `hive-core install` and listens on
   `127.0.0.1:8081` by default (typically proxied by Caddy).
 
+Assumptions and defaults:
+- Device SSH user is `hivec` (no shell). `hive-core connect` defaults to `--user hivec`.
+- Device keys are stored at `/home/hivec/.ssh/authorized_keys` and restricted to
+  `permitopen` on `127.0.0.1:5432` and `127.0.0.1:8333` with `no-pty`.
+- Pairing state lives under `<root>/state/pairing` and secrets are read from `<root>/.env`.
+- Pairing endpoint is always `POST /hive-pair` (Caddy should proxy this path).
+
 Pairing envelope (JSON output from `hive-core connect`):
 ```json
 {
   "profile": { "...": "non-secret profile JSON" },
   "otp": "opaque-high-entropy-token",
   "otp_expires_at": "2026-01-21T00:00:00Z",
-  "pair_url": "https://<public-host>/pair"
+  "pair_url": "https://<public-host>/hive-pair"
 }
 ```
-For localhost, the pairing URL is `http://localhost:8081/pair`.
+For localhost, the pairing URL is `http://localhost:8081/hive-pair`.
 
 Pairing API (HTTP(S), JSON):
 
-`POST /pair`
+`POST /hive-pair`
 
 Request body:
 ```json
@@ -102,7 +109,7 @@ Pairing envelope (`hive-core connect` output):
 }
 ```
 
-Pair request (`POST /pair`):
+Pair request (`POST /hive-pair`):
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -154,7 +161,7 @@ Steps:
    - `hive-core connect --host <public-host>` prints the envelope JSON.
 2. Hive imports the profile, generates a device keypair, and pins the SSH host key.
 3. Hive sends the OTP and device pubkey:
-   - `POST http(s)://<host>/pair`
+   - `POST http(s)://<host>/hive-pair`
    - payload: { otp, device_name, device_pubkey }
 4. hive-core validates the OTP (TTL, one-time, rate-limited), writes the key
    to `authorized_keys` with strict forwarding-only options, and returns the
@@ -165,7 +172,7 @@ Notes:
 - HTTPS termination can be handled by Caddy (or equivalent) serving the pairing
   endpoint on the same host. The pairing service listens on `127.0.0.1:8081`
   by default.
-- For localhost dev, use `http://localhost:8081/pair` (no TLS required).
+- For localhost dev, use `http://localhost:8081/hive-pair` (no TLS required).
 - If using a self-signed HTTPS cert for non-local hosts, the profile should
   include a pinned certificate fingerprint or CA bundle. Without this, the
   pairing endpoint is vulnerable to MITM.
@@ -187,7 +194,7 @@ proxy or TLS is required:
    - Tauri uses its own known_hosts file (per app config directory)
 
 If you want other machines to connect, generate an envelope with the public
-host and proxy `https://<host>/pair` to `http://127.0.0.1:8081`.
+host and proxy `https://<host>/hive-pair` to `http://127.0.0.1:8081`.
 
 ## Integration points and future work
 
@@ -200,6 +207,8 @@ hive-core CLI:
 - `connect` builds a profile using values from `/opt/hive-core/.env`.
 - `connect` should emit the pairing envelope (profile + OTP + expiry + pair_url).
 - `fingerprint` uses the host SSH key and must be shown to the client to pin.
+- `hive-core-pairing --authorized-keys` overrides the authorized_keys path
+  (default: `/home/hivec/.ssh/authorized_keys`).
 
 Hive desktop core:
 - Must use TOFU host key pinning (accept new, fail on change).

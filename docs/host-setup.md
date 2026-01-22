@@ -19,6 +19,28 @@ sudo apt update
 sudo apt install -y build-essential ca-certificates curl
 ```
 
+## Device SSH user (hivec)
+
+Create a restricted user for device SSH connections and lock down port
+forwarding:
+
+```bash
+sudo useradd -m -s /usr/sbin/nologin hivec
+sudo mkdir -p /home/hivec/.ssh
+sudo chmod 700 /home/hivec/.ssh
+```
+
+Add to `/etc/ssh/sshd_config` (then restart `sshd`):
+
+```text
+Match User hivec
+  AllowTcpForwarding yes
+  PermitOpen 127.0.0.1:5432 127.0.0.1:8333
+  PermitTTY no
+  X11Forwarding no
+  AllowAgentForwarding no
+```
+
 ## Docker + Caddy
 
 ```bash
@@ -52,13 +74,19 @@ curl -sSL https://d.juicefs.com/install | sh -
 . ~/.bashrc
 ```
 
-## Reverse proxy for pairing (/pair)
+## Reverse proxy for pairing (/hive-pair)
 
 Pairing is served from the host at `http://127.0.0.1:8081`. Use Caddy to expose
-`https://<host>/pair` for clients.
+`https://<host>/hive-pair` for clients.
 
 ```bash
-echo 'foo.hive-agents.xyz { reverse_proxy localhost:8081 }' > /etc/caddy/Caddyfile
+cat <<'EOF' > /etc/caddy/Caddyfile
+foo.hive-agents.xyz {
+  handle /hive-pair {
+    reverse_proxy localhost:8081
+  }
+}
+EOF
 caddy fmt --config /etc/caddy/Caddyfile --overwrite
 caddy stop
 caddy start --config /etc/caddy/Caddyfile
@@ -106,5 +134,5 @@ cargo run -p hive-core-cli install --root ~/hive-core --replace-existing
 ## Export a client envelope
 
 ```bash
-cargo run -p hive-core-cli connect --root ~/hive-core --host foo.hive-agents.xyz --user hive
+cargo run -p hive-core-cli connect --root ~/hive-core --host foo.hive-agents.xyz --user hivec
 ```
