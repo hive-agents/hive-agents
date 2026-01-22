@@ -111,6 +111,8 @@ target/debug/hive-core connect --host <public-host> --out profile.json
 
 The output is a JSON envelope containing the profile plus a short-lived OTP and
 pairing URL for the client handshake.
+By default, `hive-core connect` sets the SSH user to `hivec`. Use `--user` to
+override.
 
 ## Pairing handshake (recommended)
 
@@ -121,6 +123,8 @@ pairing URL for the client handshake.
 Pairing expects HTTPS for non-local hosts. Proxy `https://<host>/hive-pair` to
 `http://127.0.0.1:8081` with Caddy or a similar reverse proxy. For local dev,
 `hive-core connect --host localhost` emits `http://localhost:8081/hive-pair`.
+The pairing server writes device keys to `/home/hivec/.ssh/authorized_keys`
+with forwarding-only restrictions.
 
 ## End-to-end test (CLI)
 

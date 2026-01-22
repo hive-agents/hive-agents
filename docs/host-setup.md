@@ -19,6 +19,28 @@ sudo apt update
 sudo apt install -y build-essential ca-certificates curl
 ```
 
+## Device SSH user (hivec)
+
+Create a restricted user for device SSH connections and lock down port
+forwarding:
+
+```bash
+sudo useradd -m -s /usr/sbin/nologin hivec
+sudo mkdir -p /home/hivec/.ssh
+sudo chmod 700 /home/hivec/.ssh
+```
+
+Add to `/etc/ssh/sshd_config` (then restart `sshd`):
+
+```text
+Match User hivec
+  AllowTcpForwarding yes
+  PermitOpen 127.0.0.1:5432 127.0.0.1:8333
+  PermitTTY no
+  X11Forwarding no
+  AllowAgentForwarding no
+```
+
 ## Docker + Caddy
 
 ```bash

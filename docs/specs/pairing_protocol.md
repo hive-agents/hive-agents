@@ -23,6 +23,13 @@ Requirements:
 - The pairing service is started by `hive-core install` and listens on
   `127.0.0.1:8081` by default (typically proxied by Caddy).
 
+Assumptions and defaults:
+- Device SSH user is `hivec` (no shell). `hive-core connect` defaults to `--user hivec`.
+- Device keys are stored at `/home/hivec/.ssh/authorized_keys` and restricted to
+  `permitopen` on `127.0.0.1:5432` and `127.0.0.1:8333` with `no-pty`.
+- Pairing state lives under `<root>/state/pairing` and secrets are read from `<root>/.env`.
+- Pairing endpoint is always `POST /hive-pair` (Caddy should proxy this path).
+
 Pairing envelope (JSON output from `hive-core connect`):
 ```json
 {
@@ -200,6 +207,8 @@ hive-core CLI:
 - `connect` builds a profile using values from `/opt/hive-core/.env`.
 - `connect` should emit the pairing envelope (profile + OTP + expiry + pair_url).
 - `fingerprint` uses the host SSH key and must be shown to the client to pin.
+- `hive-core-pairing --authorized-keys` overrides the authorized_keys path
+  (default: `/home/hivec/.ssh/authorized_keys`).
 
 Hive desktop core:
 - Must use TOFU host key pinning (accept new, fail on change).
