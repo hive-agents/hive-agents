@@ -71,9 +71,7 @@ async fn run() -> Result<()> {
         replace_existing: opts.replace_existing,
     });
 
-    let app = Router::new()
-        .route("/hive-pair", post(pair_handler))
-        .with_state(state);
+    let app = build_router(state);
 
     let addr: SocketAddr = opts
         .listen
@@ -88,6 +86,12 @@ async fn run() -> Result<()> {
         .await
         .map_err(|e| format!("server error: {e}"))?;
     Ok(())
+}
+
+fn build_router(state: Arc<AppState>) -> Router<()> {
+    Router::new()
+        .route("/hive-pair", post(pair_handler))
+        .with_state(state)
 }
 
 async fn pair_handler(
@@ -396,6 +400,10 @@ async fn pair_handler(
 
 fn parse_args() -> Result<Options> {
     let mut args: VecDeque<String> = env::args().skip(1).collect();
+    parse_args_from(&mut args)
+}
+
+fn parse_args_from(args: &mut VecDeque<String>) -> Result<Options> {
     let mut root = PathBuf::from("/opt/hive-core");
     let mut listen = "127.0.0.1:8081".to_string();
     let mut authorized_keys = PathBuf::from("/home/hivec/.ssh/authorized_keys");
@@ -403,10 +411,10 @@ fn parse_args() -> Result<Options> {
 
     while let Some(arg) = args.pop_front() {
         match arg.as_str() {
-            "--root" => root = PathBuf::from(take_value(&mut args, "--root")?),
-            "--listen" => listen = take_value(&mut args, "--listen")?,
+            "--root" => root = PathBuf::from(take_value(args, "--root")?),
+            "--listen" => listen = take_value(args, "--listen")?,
             "--authorized-keys" => {
-                authorized_keys = PathBuf::from(take_value(&mut args, "--authorized-keys")?)
+                authorized_keys = PathBuf::from(take_value(args, "--authorized-keys")?)
             }
             "--replace-existing" => replace_existing = true,
             "-h" | "--help" => {
@@ -719,4 +727,68 @@ fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
         message: message.to_string(),
     };
     (status, Json(body)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::extract::connect_info::MockConnectInfo;
+    use axum::http::Request;
+    use std::collections::VecDeque;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tower::util::ServiceExt;
+
+    #[test]
+    fn parse_args_defaults_authorized_keys_to_hivec() {
+        let mut args = VecDeque::new();
+        let opts = parse_args_from(&mut args).expect("parse_args should succeed");
+        assert_eq!(
+            opts.authorized_keys,
+            PathBuf::from("/home/hivec/.ssh/authorized_keys")
+        );
+    }
+
+    #[tokio::test]
+    async fn router_handles_hive_pair_route() {
+        let otp_dir = unique_temp_dir("hive-core-pairing-otp");
+        let state = Arc::new(AppState {
+            otp_dir,
+            authorized_keys: PathBuf::from("/tmp/authorized_keys"),
+            env: EnvConfig {
+                postgres_password: "postgres".to_string(),
+                s3_access_key: "access".to_string(),
+                s3_secret_key: "secret".to_string(),
+            },
+            replace_existing: false,
+        });
+
+        let app = build_router(state).layer(MockConnectInfo(SocketAddr::from((
+            [127, 0, 0, 1],
+            12345,
+        ))));
+        let request = Request::builder()
+            .method("POST")
+            .uri("/hive-pair")
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .expect("request should build");
+        let response = app.oneshot(request).await.expect("request should succeed");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "{}-{}-{}",
+            prefix,
+            std::process::id(),
+            nanos
+        ));
+        let _ = fs::create_dir_all(&path);
+        path
+    }
 }

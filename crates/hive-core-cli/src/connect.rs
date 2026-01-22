@@ -281,3 +281,28 @@ fn read_env_file(path: &Path) -> Result<std::collections::HashMap<String, String
     }
     Ok(map)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn pair_url_for_localhost_uses_http_hive_pair() {
+        let url = pair_url_for_host("localhost");
+        assert_eq!(url, "http://localhost:8081/hive-pair");
+    }
+
+    #[test]
+    fn pair_url_for_public_host_uses_https_hive_pair() {
+        let url = pair_url_for_host("example.com");
+        assert_eq!(url, "https://example.com/hive-pair");
+    }
+
+    #[test]
+    fn parse_args_defaults_user_to_hivec() {
+        let mut args = VecDeque::new();
+        let opts = parse_args(&mut args).expect("parse_args should succeed");
+        assert_eq!(opts.user, "hivec");
+    }
+}
