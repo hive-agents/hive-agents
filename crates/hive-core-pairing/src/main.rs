@@ -72,7 +72,7 @@ async fn run() -> Result<()> {
     });
 
     let app = Router::new()
-        .route("/pair", post(pair_handler))
+        .route("/hive-pair", post(pair_handler))
         .with_state(state);
 
     let addr: SocketAddr = opts
@@ -398,7 +398,7 @@ fn parse_args() -> Result<Options> {
     let mut args: VecDeque<String> = env::args().skip(1).collect();
     let mut root = PathBuf::from("/opt/hive-core");
     let mut listen = "127.0.0.1:8081".to_string();
-    let mut authorized_keys = PathBuf::from("/home/hive/.ssh/authorized_keys");
+    let mut authorized_keys = PathBuf::from("/home/hivec/.ssh/authorized_keys");
     let mut replace_existing = false;
 
     while let Some(arg) = args.pop_front() {

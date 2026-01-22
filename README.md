@@ -78,18 +78,18 @@ Windows: WebView2 runtime (preinstalled on most Windows 10/11 machines).
 
 ## Server setup (Linux)
 
-Create a restricted `hive` user and lock down SSH forwarding:
+Create a restricted `hivec` user and lock down SSH forwarding:
 
 ```bash
-sudo useradd -m -s /usr/sbin/nologin hive
-sudo mkdir -p /home/hive/.ssh
-sudo chmod 700 /home/hive/.ssh
+sudo useradd -m -s /usr/sbin/nologin hivec
+sudo mkdir -p /home/hivec/.ssh
+sudo chmod 700 /home/hivec/.ssh
 ```
 
 Add to `/etc/ssh/sshd_config` (then restart `sshd`):
 
 ```text
-Match User hive
+Match User hivec
   AllowTcpForwarding yes
   PermitOpen 127.0.0.1:5432 127.0.0.1:8333
   PermitTTY no
@@ -118,9 +118,9 @@ pairing URL for the client handshake.
 2. Paste the JSON into the Hive desktop app (Tauri).
 3. The app calls the pairing endpoint, stores secrets, and connects.
 
-Pairing expects HTTPS for non-local hosts. Proxy `https://<host>/pair` to
+Pairing expects HTTPS for non-local hosts. Proxy `https://<host>/hive-pair` to
 `http://127.0.0.1:8081` with Caddy or a similar reverse proxy. For local dev,
-`hive-core connect --host localhost` emits `http://localhost:8081/pair`.
+`hive-core connect --host localhost` emits `http://localhost:8081/hive-pair`.
 
 ## End-to-end test (CLI)
 

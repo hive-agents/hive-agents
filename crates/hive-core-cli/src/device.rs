@@ -27,7 +27,7 @@ pub fn parse_add_args(args: &mut VecDeque<String>) -> Result<DeviceAddOptions> {
     let mut name = None;
     let mut pubkey = None;
     let mut pubkey_file = None;
-    let mut authorized_keys = PathBuf::from("/home/hive/.ssh/authorized_keys");
+    let mut authorized_keys = PathBuf::from("/home/hivec/.ssh/authorized_keys");
     let permit_open = vec!["127.0.0.1:5432".to_string(), "127.0.0.1:8333".to_string()];
 
     while let Some(arg) = args.pop_front() {
@@ -70,7 +70,7 @@ pub fn parse_add_args(args: &mut VecDeque<String>) -> Result<DeviceAddOptions> {
 
 pub fn parse_remove_args(args: &mut VecDeque<String>) -> Result<DeviceRemoveOptions> {
     let mut name = None;
-    let mut authorized_keys = PathBuf::from("/home/hive/.ssh/authorized_keys");
+    let mut authorized_keys = PathBuf::from("/home/hivec/.ssh/authorized_keys");
 
     while let Some(arg) = args.pop_front() {
         match arg.as_str() {
@@ -94,7 +94,7 @@ pub fn parse_remove_args(args: &mut VecDeque<String>) -> Result<DeviceRemoveOpti
 }
 
 pub fn parse_list_args(args: &mut VecDeque<String>) -> Result<DeviceListOptions> {
-    let mut authorized_keys = PathBuf::from("/home/hive/.ssh/authorized_keys");
+    let mut authorized_keys = PathBuf::from("/home/hivec/.ssh/authorized_keys");
 
     while let Some(arg) = args.pop_front() {
         match arg.as_str() {

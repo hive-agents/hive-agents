@@ -29,7 +29,7 @@ pub fn parse_args(args: &mut VecDeque<String>) -> Result<ConnectOptions> {
         root: PathBuf::from("/opt/hive-core"),
         host: None,
         port: 22,
-        user: "hive".to_string(),
+        user: "hivec".to_string(),
         display_name: "Hive".to_string(),
         out: None,
         pretty: false,
@@ -256,9 +256,9 @@ fn generate_hex_secret(bytes: usize) -> Result<String> {
 
 fn pair_url_for_host(host: &str) -> String {
     if is_localhost(host) {
-        format!("http://{}:8081/pair", host)
+        format!("http://{}:8081/hive-pair", host)
     } else {
-        format!("https://{}/pair", host)
+        format!("https://{}/hive-pair", host)
     }
 }
 

@@ -19,4 +19,4 @@ Steps:
 
 Notes:
 - `ssh-keyscan` can show a proxy key (SSHPiper) vs local `sshd` key; we now default to scanning the public host so the client sees the same key.
-- For localhost dev, use `--host localhost` so the pairing URL uses `http://localhost:8081/pair` (no TLS required).
+- For localhost dev, use `--host localhost` so the pairing URL uses `http://localhost:8081/hive-pair` (no TLS required).

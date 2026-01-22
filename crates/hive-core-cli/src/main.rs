@@ -152,7 +152,7 @@ fn print_connect_usage() {
     println!("  --root <PATH>           install root (default: /opt/hive-core)");
     println!("  --host <HOST>           public ssh host (or set HIVE_HOST)");
     println!("  --port <PORT>           ssh port (default: 22)");
-    println!("  --user <USER>           ssh user (default: hive)");
+    println!("  --user <USER>           ssh user (default: hivec)");
     println!("  --display-name <NAME>   profile display name (default: Hive)");
     println!("  --out <PATH>            write profile json to a file");
     println!("  --pretty                pretty-print json output");
