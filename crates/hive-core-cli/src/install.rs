@@ -1,10 +1,11 @@
+use crate::connect;
 use crate::util::{err, take_value, Result};
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::json;
 
@@ -19,6 +20,7 @@ pub struct InstallOptions {
     pub force: bool,
     pub skip_up: bool,
     pub skip_format: bool,
+    pub skip_connect: bool,
     pub replace_existing: bool,
     pub bucket: String,
     pub volume: String,
@@ -44,6 +46,7 @@ pub fn parse_args(args: &mut VecDeque<String>) -> Result<InstallOptions> {
         force: false,
         skip_up: false,
         skip_format: false,
+        skip_connect: false,
         replace_existing: false,
         bucket: "hive".to_string(),
         volume: "hive".to_string(),
@@ -58,6 +61,7 @@ pub fn parse_args(args: &mut VecDeque<String>) -> Result<InstallOptions> {
             "--force" => opts.force = true,
             "--skip-up" => opts.skip_up = true,
             "--skip-format" => opts.skip_format = true,
+            "--skip-connect" => opts.skip_connect = true,
             "--replace-existing" => opts.replace_existing = true,
             "--bucket" => opts.bucket = take_value(args, "--bucket")?,
             "--volume" => opts.volume = take_value(args, "--volume")?,
@@ -100,7 +104,11 @@ pub fn run(opts: InstallOptions) -> Result<()> {
         format_juicefs(&opts.root, &env_config, opts.wait_seconds)?;
     }
 
-    print_install_hints(&opts.root)?;
+    if !opts.skip_connect {
+        connect_and_mount(&opts)?;
+    }
+
+    print_install_hints(&opts.root, opts.skip_connect)?;
     Ok(())
 }
 
@@ -538,6 +546,179 @@ fn ensure_pairing_binary(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn connect_and_mount(opts: &InstallOptions) -> Result<()> {
+    let mountpoint = PathBuf::from("/home/hive/hive");
+    ensure_mountpoint(&mountpoint)?;
+
+    let envelope_path = temp_envelope_path();
+    let connect_opts = connect::ConnectOptions {
+        root: opts.root.clone(),
+        host: Some("127.0.0.1".to_string()),
+        port: 22,
+        user: "hive".to_string(),
+        display_name: "Hive".to_string(),
+        out: Some(envelope_path.clone()),
+        pretty: false,
+        fingerprint: None,
+    };
+    connect::run(connect_opts)?;
+    set_permissions(&envelope_path, 0o644)?;
+
+    let desktop_cli = ensure_desktop_cli_binary()?;
+    spawn_desktop_connect(
+        &desktop_cli,
+        &envelope_path,
+        &mountpoint,
+        opts.replace_existing,
+        &opts.root,
+    )?;
+
+    let _ = fs::remove_file(&envelope_path);
+    Ok(())
+}
+
+fn ensure_desktop_cli_binary() -> Result<PathBuf> {
+    let repo_root = repo_root();
+    let cargo_toml = repo_root.join("Cargo.toml");
+    if !cargo_toml.exists() {
+        return Err(err(format!(
+            "desktop cli build requires source checkout (missing {})",
+            cargo_toml.display()
+        )));
+    }
+
+    let status = Command::new("cargo")
+        .arg("build")
+        .arg("-p")
+        .arg("hive-desktop-cli")
+        .arg("--release")
+        .current_dir(&repo_root)
+        .status()
+        .map_err(|e| err(format!("failed to build hive-desktop-cli: {}", e)))?;
+    if !status.success() {
+        return Err(err("hive-desktop-cli build failed"));
+    }
+
+    let binary = repo_root.join("target").join("release").join("hive-desktop-cli");
+    if !binary.exists() {
+        return Err(err(format!(
+            "hive-desktop-cli binary missing after build: {}",
+            binary.display()
+        )));
+    }
+    Ok(binary)
+}
+
+fn spawn_desktop_connect(
+    binary: &Path,
+    envelope_path: &Path,
+    mountpoint: &Path,
+    replace_existing: bool,
+    root: &Path,
+) -> Result<()> {
+    let log_path = root.join("state").join("host-mount.log");
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| err(format!("failed to open {}: {}", log_path.display(), e)))?;
+    let mut cmd = desktop_cli_command(binary)?;
+    cmd.arg("connect")
+        .arg("--envelope")
+        .arg(envelope_path)
+        .arg("--mountpoint")
+        .arg(mountpoint)
+        .arg("--accept-host-key")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(
+            log_file
+                .try_clone()
+                .map_err(|e| err(format!("failed to clone log file: {}", e)))?,
+        ))
+        .stderr(Stdio::from(log_file));
+
+    if replace_existing {
+        cmd.arg("--replace-existing");
+    }
+
+    let mut child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound && running_as_root() {
+            err("sudo not found; install it or rerun with --skip-connect")
+        } else {
+            err(format!("failed to start local mount: {}", e))
+        }
+    })?;
+
+    std::thread::sleep(Duration::from_secs(1));
+    if let Some(status) = child
+        .try_wait()
+        .map_err(|e| err(format!("failed to check mount status: {}", e)))?
+    {
+        return Err(err(format!(
+            "local mount failed to start (exit {:?}); see {}",
+            status.code(),
+            log_path.display()
+        )));
+    }
+
+    println!(
+        "local mount started at {} (pid {}, logs: {})",
+        mountpoint.display(),
+        child.id(),
+        log_path.display()
+    );
+    Ok(())
+}
+
+fn desktop_cli_command(binary: &Path) -> Result<Command> {
+    if running_as_root() {
+        let mut cmd = Command::new("sudo");
+        cmd.arg("-H").arg("-u").arg("hive").arg(binary);
+        Ok(cmd)
+    } else {
+        Ok(Command::new(binary))
+    }
+}
+
+fn running_as_root() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(status) = fs::read_to_string("/proc/self/status") {
+            for line in status.lines() {
+                if let Some(rest) = line.strip_prefix("Uid:") {
+                    let uid = rest.split_whitespace().next().unwrap_or("");
+                    return uid == "0";
+                }
+            }
+        }
+    }
+
+    std::env::var("USER")
+        .map(|user| user == "root")
+        .unwrap_or(false)
+}
+
+fn ensure_mountpoint(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)
+        .map_err(|e| err(format!("failed to create {}: {}", path.display(), e)))?;
+    #[cfg(unix)]
+    {
+        let user = ensure_user("hive")?;
+        set_permissions(path, 0o755)?;
+        chown_path(path, user.uid, user.gid)?;
+    }
+    Ok(())
+}
+
+fn temp_envelope_path() -> PathBuf {
+    let pid = std::process::id();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!("hive-core-envelope-{pid}-{now}.json"))
+}
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -666,10 +847,19 @@ fn write_format_marker(path: &Path, env: &EnvConfig) -> Result<()> {
     Ok(())
 }
 
-fn print_install_hints(root: &Path) -> Result<()> {
+fn print_install_hints(root: &Path, skip_connect: bool) -> Result<()> {
     println!("install complete");
     println!("root: {}", root.display());
     println!("next steps:");
+    if skip_connect {
+        println!("- local mount skipped (--skip-connect)");
+    } else {
+        println!(
+            "- local mount: /home/hive/hive (logs at {})",
+            root.join("state").join("host-mount.log").display()
+        );
+        println!("- rerun with --skip-connect to disable local mount");
+    }
     println!("- export a pairing envelope: hive-core connect --host <public-host>");
     println!("- share the SSH host key fingerprint from: hive-core fingerprint");
     println!("- configure Caddy to proxy https://<host>/pair to http://127.0.0.1:8081");

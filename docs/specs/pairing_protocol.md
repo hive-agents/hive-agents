@@ -13,6 +13,7 @@ endpoint on hive-core.
 Requirements:
 - HTTPS endpoint on hive-core for non-local hosts (self-signed or real cert).
 - Localhost pairing may use HTTP without TLS.
+- The host can pair with itself using the localhost flow (same handshake, no proxy).
 - OTP is high-entropy (not a short numeric code) and single-use.
 - OTP is bundled alongside the non-secret connection info and expires quickly
   (target: 5 minutes).
@@ -42,9 +43,11 @@ Request body:
 {
   "otp": "opaque-high-entropy-token",
   "device_name": "hive-desktop",
-  "device_pubkey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA..."
+  "device_pubkey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...",
+  "replace_existing": false
 }
 ```
+`replace_existing` is optional; if true, the server must also allow replacement.
 
 Response body (success, HTTP 200):
 ```json
@@ -69,6 +72,7 @@ Response body (error, non-200):
 Expected error codes:
 - `400 Bad Request`: malformed JSON, missing fields, invalid `device_pubkey` format.
 - `401 Unauthorized`: OTP invalid, expired, or already used.
+- `403 Forbidden`: replacement requested but not allowed by the server.
 - `409 Conflict`: `device_name` already exists in `authorized_keys`.
 - `429 Too Many Requests`: rate-limited (per-IP or per-OTP).
 - `500 Internal Server Error`: unexpected server error.
@@ -78,6 +82,7 @@ Validation rules:
 - `otp_expires_at` is UTC ISO 8601; server rejects after expiry.
 - `device_name` must not contain whitespace.
 - `device_pubkey` must be a single-line SSH public key (`ssh-` or `ecdsa-`).
+- `replace_existing` is optional and defaults to false.
 
 Minimal JSON schema (Draft 2020-12 style; descriptive only):
 
@@ -106,7 +111,8 @@ Pair request (`POST /pair`):
   "properties": {
     "otp": { "type": "string", "minLength": 32 },
     "device_name": { "type": "string", "minLength": 1 },
-    "device_pubkey": { "type": "string", "minLength": 16 }
+    "device_pubkey": { "type": "string", "minLength": 16 },
+    "replace_existing": { "type": "boolean" }
   },
   "additionalProperties": false
 }
@@ -164,6 +170,24 @@ Notes:
   include a pinned certificate fingerprint or CA bundle. Without this, the
   pairing endpoint is vulnerable to MITM.
 - A short numeric OTP is not sufficient if the endpoint is internet-reachable.
+
+## Self-connection (same host)
+
+The host can mount/connect itself. Use the localhost pairing URL so no reverse
+proxy or TLS is required:
+
+1. Generate a localhost envelope on the host:
+   - `hive-core connect --host localhost --out /tmp/hive-envelope.json`
+2. Import the envelope on the same host:
+   - `hive-desktop-cli connect --envelope /tmp/hive-envelope.json --mountpoint ~/hive-mount --accept-host-key`
+   - add `--replace-existing` if you want to overwrite the device name
+   - in Tauri, paste the envelope and check "Replace existing device name" if needed
+3. Host key pinning:
+   - CLI uses `--accept-host-key` or a pre-seeded known_hosts file
+   - Tauri uses its own known_hosts file (per app config directory)
+
+If you want other machines to connect, generate an envelope with the public
+host and proxy `https://<host>/pair` to `http://127.0.0.1:8081`.
 
 ## Integration points and future work
 

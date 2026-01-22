@@ -130,10 +130,11 @@ fn profiles_list(state: State<'_, AppState>) -> Result<Vec<ProfileSummary>, Stri
 async fn profile_import(
     state: State<'_, AppState>,
     json: String,
+    replace_existing: Option<bool>,
 ) -> Result<String, String> {
     let envelope = parse_pairing_envelope(&json)?;
     let profile = envelope.profile.clone();
-    let pairing = pair_envelope(&envelope, None)
+    let pairing = pair_envelope(&envelope, None, replace_existing.unwrap_or(false))
         .await
         .map_err(|e| e.to_string())?;
 
@@ -421,9 +422,9 @@ fn default_cache_dir(paths: &AppPaths, profile_id: &ProfileId) -> PathBuf {
 
 fn default_mountpoint() -> PathBuf {
     if let Some(base) = BaseDirs::new() {
-        return base.home_dir().join("Hive");
+        return base.home_dir().join("hive");
     }
-    PathBuf::from("Hive")
+    PathBuf::from("hive")
 }
 
 fn detect_platform() -> Platform {

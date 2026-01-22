@@ -90,7 +90,7 @@ impl Default for SupervisorConfig {
             known_hosts_path: PathBuf::from("known_hosts"),
             health_interval: Duration::from_secs(5),
             mount_check_interval: Duration::from_millis(500),
-            mount_timeout: Duration::from_secs(15),
+            mount_timeout: Duration::from_secs(60),
             tunnel_timeout: Duration::from_secs(10),
             port_check_timeout: Duration::from_secs(1),
             preflight_timeout: Duration::from_secs(5),
@@ -355,7 +355,7 @@ impl Supervisor {
 
         self.attach_child_logs(LogSource::Mount, mount.take_stdout(), mount.take_stderr());
         self.mount = Some(mount);
-        if let Some(mount) = self.mount.as_ref() {
+        if let Some(mount) = self.mount.as_mut() {
             mount
                 .wait_mounted(self.config.mount_timeout, self.config.mount_check_interval)
                 .await?;

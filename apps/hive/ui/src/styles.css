@@ -227,6 +227,12 @@ select {
   justify-content: space-between;
 }
 
+.panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .panel--onboard textarea {
   margin-top: 16px;
 }

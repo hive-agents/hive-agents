@@ -40,9 +40,15 @@ impl MountSession {
         Ok(self.child.try_wait()?)
     }
 
-    pub async fn wait_mounted(&self, timeout: Duration, interval: Duration) -> Result<()> {
+    pub async fn wait_mounted(&mut self, timeout: Duration, interval: Duration) -> Result<()> {
         let start = Instant::now();
         loop {
+            if let Some(status) = self.child.try_wait()? {
+                return Err(DesktopError::Mount(format!(
+                    "juicefs mount exited: {status}"
+                )));
+            }
+
             match filesystem::is_mounted(&self.mountpoint) {
                 Ok(true) => return Ok(()),
                 Ok(false) => {}

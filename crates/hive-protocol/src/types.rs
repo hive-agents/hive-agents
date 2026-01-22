@@ -40,6 +40,8 @@ pub struct PairRequest {
     pub otp: String,
     pub device_name: String,
     pub device_pubkey: String,
+    #[serde(default)]
+    pub replace_existing: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -122,6 +124,7 @@ pub struct LocalSettings {
     pub profile_id: ProfileId,
     pub mountpoint: Mountpoint,
     pub cache: CacheSettings,
+    #[serde(default)]
     pub runtime: RuntimeSettings,
 }
 

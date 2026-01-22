@@ -16,6 +16,7 @@ pub struct PairingOutcome {
 pub async fn pair_envelope(
     envelope: &PairingEnvelope,
     device_name: Option<String>,
+    replace_existing: bool,
 ) -> Result<PairingOutcome> {
     let device_name = device_name
         .map(|name| sanitize_device_name(&name))
@@ -25,7 +26,7 @@ pub async fn pair_envelope(
     let (private_key, public_key) = generate_device_keypair(&device_name)?;
     let public_key = public_key.trim().to_string();
 
-    let response = pair_with_core(envelope, &device_name, &public_key).await?;
+    let response = pair_with_core(envelope, &device_name, &public_key, replace_existing).await?;
     if response.profile_id != envelope.profile.profile_id {
         return Err(DesktopError::Pairing(
             "pairing response profile_id mismatch".to_string(),
@@ -44,6 +45,7 @@ pub async fn pair_with_core(
     envelope: &PairingEnvelope,
     device_name: &str,
     device_pubkey: &str,
+    replace_existing: bool,
 ) -> Result<PairResponse> {
     if envelope.pair_url.trim().is_empty() {
         return Err(DesktopError::Pairing("pair_url is missing".to_string()));
@@ -59,6 +61,7 @@ pub async fn pair_with_core(
         otp: envelope.otp.clone(),
         device_name: device_name.to_string(),
         device_pubkey: device_pubkey.trim().to_string(),
+        replace_existing,
     };
 
     let response = client

@@ -469,7 +469,7 @@ const App = () => {
                         onChange={(event) =>
                           updateDraft({ mountpoint: event.target.value })
                         }
-                        placeholder="/Users/alex/Hive"
+                        placeholder="/Users/alex/hive"
                         disabled={selectionLocked}
                       />
                       <button

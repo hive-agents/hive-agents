@@ -111,6 +111,7 @@ fn print_install_usage() {
     println!("  --force                 overwrite compose.yml if present");
     println!("  --skip-up               skip docker compose up -d");
     println!("  --skip-format           skip juicefs format");
+    println!("  --skip-connect          skip starting local mount");
     println!("  --replace-existing      replace existing device on pairing");
     println!("  --bucket <NAME>         bucket name (default: hive)");
     println!("  --volume <NAME>         juicefs volume name (default: hive)");

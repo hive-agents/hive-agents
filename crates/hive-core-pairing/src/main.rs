@@ -121,6 +121,7 @@ async fn pair_handler(
             ("device_name", serde_json::json!(payload.device_name)),
             ("otp_prefix", serde_json::json!(otp_prefix(&payload.otp))),
             ("pubkey_type", serde_json::json!(pubkey_type(&payload.device_pubkey))),
+            ("replace_existing", serde_json::json!(payload.replace_existing)),
         ],
     );
     // TODO: Add rate limiting and attempt tracking (per-IP or per-OTP).
@@ -277,54 +278,8 @@ async fn pair_handler(
         );
     }
 
-    match device_name_exists(&state.authorized_keys, &payload.device_name) {
-        Ok(true) => {
-            if state.replace_existing {
-                if let Err(message) =
-                    remove_device_key(&state.authorized_keys, &payload.device_name)
-                {
-                    log_event(
-                        "error",
-                        "pair_error",
-                        &[
-                            ("remote_addr", serde_json::json!(remote_addr.to_string())),
-                            (
-                                "reason",
-                                serde_json::json!("authorized_keys_replace_failed"),
-                            ),
-                            ("error", serde_json::json!(message)),
-                        ],
-                    );
-                    return error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal_error",
-                        &message,
-                    );
-                }
-                log_event(
-                    "info",
-                    "device_replace",
-                    &[
-                        ("remote_addr", serde_json::json!(remote_addr.to_string())),
-                        ("device_name", serde_json::json!(payload.device_name)),
-                    ],
-                );
-            } else {
-                log_reject(
-                    remote_addr,
-                    "device_name_exists",
-                    Some("device_name already exists"),
-                    Some(otp),
-                    Some(&payload.device_name),
-                );
-                return error_response(
-                    StatusCode::CONFLICT,
-                    "device_name_exists",
-                    "device_name already exists",
-                );
-            }
-        }
-        Ok(false) => {}
+    let existing_keys = match device_keys_for_name(&state.authorized_keys, &payload.device_name) {
+        Ok(keys) => keys,
         Err(message) => {
             log_event(
                 "error",
@@ -337,19 +292,88 @@ async fn pair_handler(
             );
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &message);
         }
+    };
+
+    let mut should_add = true;
+    if !existing_keys.is_empty() {
+        if existing_keys.iter().any(|key| key == &pubkey) {
+            should_add = false;
+            log_event(
+                "info",
+                "device_exists",
+                &[
+                    ("remote_addr", serde_json::json!(remote_addr.to_string())),
+                    ("device_name", serde_json::json!(payload.device_name)),
+                ],
+            );
+        } else if payload.replace_existing {
+            if !state.replace_existing {
+                log_reject(
+                    remote_addr,
+                    "replace_not_allowed",
+                    Some("server does not allow replacing devices"),
+                    Some(otp),
+                    Some(&payload.device_name),
+                );
+                return error_response(
+                    StatusCode::FORBIDDEN,
+                    "replace_not_allowed",
+                    "server does not allow replacing devices",
+                );
+            }
+            if let Err(message) = remove_device_key(&state.authorized_keys, &payload.device_name) {
+                log_event(
+                    "error",
+                    "pair_error",
+                    &[
+                        ("remote_addr", serde_json::json!(remote_addr.to_string())),
+                        ("reason", serde_json::json!("authorized_keys_replace_failed")),
+                        ("error", serde_json::json!(message)),
+                    ],
+                );
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    &message,
+                );
+            }
+            log_event(
+                "info",
+                "device_replace",
+                &[
+                    ("remote_addr", serde_json::json!(remote_addr.to_string())),
+                    ("device_name", serde_json::json!(payload.device_name)),
+                ],
+            );
+        } else {
+            log_reject(
+                remote_addr,
+                "device_name_exists",
+                Some("device_name already exists"),
+                Some(otp),
+                Some(&payload.device_name),
+            );
+            return error_response(
+                StatusCode::CONFLICT,
+                "device_name_exists",
+                "device_name already exists",
+            );
+        }
     }
 
-    if let Err(message) = add_device_key(&state.authorized_keys, &payload.device_name, &pubkey) {
-        log_event(
-            "error",
-            "pair_error",
-            &[
-                ("remote_addr", serde_json::json!(remote_addr.to_string())),
-                ("reason", serde_json::json!("authorized_keys_write_failed")),
-                ("error", serde_json::json!(message)),
-            ],
-        );
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &message);
+    if should_add {
+        if let Err(message) = add_device_key(&state.authorized_keys, &payload.device_name, &pubkey) {
+            log_event(
+                "error",
+                "pair_error",
+                &[
+                    ("remote_addr", serde_json::json!(remote_addr.to_string())),
+                    ("reason", serde_json::json!("authorized_keys_write_failed")),
+                    ("error", serde_json::json!(message)),
+                ],
+            );
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &message);
+        }
     }
 
     let secrets = build_secret_map(&record.profile_id, &state.env);
@@ -561,23 +585,33 @@ fn normalize_pubkey(pubkey: &str) -> Result<String> {
     if trimmed.contains('\n') {
         return Err("device_pubkey must be a single line".to_string());
     }
-    if !(trimmed.starts_with("ssh-") || trimmed.starts_with("ecdsa-")) {
-        return Err("device_pubkey must start with ssh- or ecdsa-".to_string());
-    }
     let parts: Vec<&str> = trimmed.split_whitespace().collect();
     if parts.len() < 2 {
         return Err("device_pubkey is missing key data".to_string());
     }
-    Ok(trimmed.to_string())
+    if !(parts[0].starts_with("ssh-") || parts[0].starts_with("ecdsa-")) {
+        return Err("device_pubkey must start with ssh- or ecdsa-".to_string());
+    }
+    Ok(format!("{} {}", parts[0], parts[1]))
 }
 
-fn device_name_exists(authorized_keys: &Path, name: &str) -> Result<bool> {
+fn device_keys_for_name(authorized_keys: &Path, name: &str) -> Result<Vec<String>> {
     if !authorized_keys.exists() {
-        return Ok(false);
+        return Ok(Vec::new());
     }
+    let token = format!("hive-device={name}");
     let existing = fs::read_to_string(authorized_keys)
         .map_err(|e| format!("failed to read {}: {}", authorized_keys.display(), e))?;
-    Ok(existing.contains(&format!("hive-device={name}")))
+    let mut keys = Vec::new();
+    for line in existing.lines() {
+        if !line.contains(&token) {
+            continue;
+        }
+        if let Some(key) = extract_pubkey_from_line(line) {
+            keys.push(key);
+        }
+    }
+    Ok(keys)
 }
 
 fn add_device_key(authorized_keys: &Path, name: &str, pubkey: &str) -> Result<()> {
@@ -596,6 +630,19 @@ fn add_device_key(authorized_keys: &Path, name: &str, pubkey: &str) -> Result<()
 
     set_key_permissions(authorized_keys)?;
     Ok(())
+}
+
+fn extract_pubkey_from_line(line: &str) -> Option<String> {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    for (idx, part) in parts.iter().enumerate() {
+        if part.starts_with("ssh-") || part.starts_with("ecdsa-") {
+            if let Some(key_data) = parts.get(idx + 1) {
+                return Some(format!("{} {}", part, key_data));
+            }
+            return None;
+        }
+    }
+    None
 }
 
 fn remove_device_key(authorized_keys: &Path, name: &str) -> Result<()> {

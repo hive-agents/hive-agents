@@ -100,12 +100,13 @@ fn print_connect_usage() {
     println!("hive-desktop-cli connect [options]");
     println!();
     println!("options:");
-    println!("  --envelope <PATH>        pairing envelope json file");
+    println!("  --envelope <PATH|JSON>   pairing envelope json file or inline json");
     println!("  --mountpoint <PATH>      mountpoint path");
     println!("  --cache-dir <PATH>       cache directory (default: ~/.cache/hive-agents/<profile>)");
     println!("  --cache-size <MIB>       cache size in MiB (default: 10240)");
     println!("  --known-hosts <PATH>     known_hosts file (default: ~/.config/hive-agents/known_hosts)");
     println!("  --accept-host-key        fetch and pin the host key automatically");
+    println!("  --replace-existing       replace existing device name during pairing");
     println!("  --ssh-path <PATH>        ssh binary path (default: ssh)");
     println!("  --juicefs-path <PATH>    juicefs binary path (default: juicefs)");
     println!("  --log-lines <N>          log lines to keep (default: 200)");
@@ -113,12 +114,13 @@ fn print_connect_usage() {
 }
 
 struct ConnectOptions {
-    envelope_path: PathBuf,
+    envelope_input: String,
     mountpoint: PathBuf,
     cache_dir: Option<PathBuf>,
     cache_size_mib: u32,
     known_hosts: PathBuf,
     accept_host_key: bool,
+    replace_existing: bool,
     ssh_path: PathBuf,
     juicefs_path: PathBuf,
     log_lines: usize,
@@ -126,12 +128,13 @@ struct ConnectOptions {
 }
 
 fn parse_connect_args(args: &mut VecDeque<String>) -> Result<ConnectOptions> {
-    let mut envelope_path = None;
+    let mut envelope_input = None;
     let mut mountpoint = None;
     let mut cache_dir = None;
     let mut cache_size_mib = 10240u32;
     let mut known_hosts = default_known_hosts_path();
     let mut accept_host_key = false;
+    let mut replace_existing = false;
     let mut ssh_path = PathBuf::from("ssh");
     let mut juicefs_path = PathBuf::from("juicefs");
     let mut log_lines = 200usize;
@@ -139,7 +142,7 @@ fn parse_connect_args(args: &mut VecDeque<String>) -> Result<ConnectOptions> {
 
     while let Some(arg) = args.pop_front() {
         match arg.as_str() {
-            "--envelope" => envelope_path = Some(PathBuf::from(take_value(args, "--envelope")?)),
+            "--envelope" => envelope_input = Some(take_value(args, "--envelope")?),
             "--mountpoint" => mountpoint = Some(PathBuf::from(take_value(args, "--mountpoint")?)),
             "--cache-dir" => cache_dir = Some(PathBuf::from(take_value(args, "--cache-dir")?)),
             "--cache-size" => {
@@ -150,6 +153,7 @@ fn parse_connect_args(args: &mut VecDeque<String>) -> Result<ConnectOptions> {
             }
             "--known-hosts" => known_hosts = PathBuf::from(take_value(args, "--known-hosts")?),
             "--accept-host-key" => accept_host_key = true,
+            "--replace-existing" => replace_existing = true,
             "--ssh-path" => ssh_path = PathBuf::from(take_value(args, "--ssh-path")?),
             "--juicefs-path" => juicefs_path = PathBuf::from(take_value(args, "--juicefs-path")?),
             "--log-lines" => {
@@ -168,16 +172,17 @@ fn parse_connect_args(args: &mut VecDeque<String>) -> Result<ConnectOptions> {
         }
     }
 
-    let envelope_path = envelope_path.ok_or_else(|| err("--envelope is required"))?;
+    let envelope_input = envelope_input.ok_or_else(|| err("--envelope is required"))?;
     let mountpoint = mountpoint.ok_or_else(|| err("--mountpoint is required"))?;
 
     Ok(ConnectOptions {
-        envelope_path,
+        envelope_input,
         mountpoint,
         cache_dir,
         cache_size_mib,
         known_hosts,
         accept_host_key,
+        replace_existing,
         ssh_path,
         juicefs_path,
         log_lines,
@@ -191,9 +196,9 @@ fn take_value(args: &mut VecDeque<String>, flag: &str) -> Result<String> {
 }
 
 async fn run_connect(opts: ConnectOptions) -> Result<()> {
-    let envelope = load_envelope(&opts.envelope_path)?;
+    let envelope = load_envelope(&opts.envelope_input)?;
     let profile = envelope.profile.clone();
-    let pairing = pair_envelope(&envelope, None).await?;
+    let pairing = pair_envelope(&envelope, None, opts.replace_existing).await?;
     let cache_dir = opts
         .cache_dir
         .unwrap_or_else(|| default_cache_dir(&profile));
@@ -294,15 +299,25 @@ async fn run_connect(opts: ConnectOptions) -> Result<()> {
     Ok(())
 }
 
-fn load_envelope(path: &Path) -> Result<PairingEnvelope> {
-    let content = if path == Path::new("-") {
+fn load_envelope(input: &str) -> Result<PairingEnvelope> {
+    let content = if input == "-" {
         read_stdin()?
     } else {
-        fs::read_to_string(path)
-            .map_err(|e| err(format!("failed to read {}: {}", path.display(), e)))?
+        let path = Path::new(input);
+        if path.exists() {
+            fs::read_to_string(path)
+                .map_err(|e| err(format!("failed to read {}: {}", path.display(), e)))?
+        } else {
+            input.to_string()
+        }
     };
     let envelope: PairingEnvelope = serde_json::from_str(&content)
-        .map_err(|e| err(format!("invalid pairing envelope json: {}", e)))?;
+        .map_err(|e| {
+            err(format!(
+                "invalid pairing envelope json (expected file path, '-' for stdin, or inline json): {}",
+                e
+            ))
+        })?;
     envelope
         .profile
         .validate()

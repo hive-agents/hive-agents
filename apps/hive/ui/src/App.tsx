@@ -65,6 +65,24 @@ const formatStateLabel = (value?: string | null): string => {
   return value.replace(/_/g, ' ')
 }
 
+const errorMessage = (err: unknown, fallback: string): string => {
+  if (err instanceof Error) return err.message
+  if (typeof err === 'string') return err
+  if (err && typeof err === 'object' && 'message' in err) {
+    const message = (err as { message?: unknown }).message
+    if (typeof message === 'string') return message
+  }
+  return fallback
+}
+
+const isSessionMissing = (message: string): boolean => {
+  const lowered = message.toLowerCase()
+  return (
+    lowered.includes('session not found') ||
+    lowered.includes('session not started')
+  )
+}
+
 const resolvePort = (
   ports: Record<string, number> | undefined,
   name: string,
@@ -91,6 +109,7 @@ const App = () => {
   const [logLines, setLogLines] = useState(DEFAULT_LOG_LINES)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [importJson, setImportJson] = useState('')
+  const [replaceExisting, setReplaceExisting] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -125,7 +144,7 @@ const App = () => {
       })
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load profiles')
+      setError(errorMessage(err, 'Failed to load profiles'))
     } finally {
       setBusy(null)
     }
@@ -156,11 +175,7 @@ const App = () => {
               current[selectedProfileId] ??
               makeDefaultSettings(detectPlatform()),
           }))
-          setError(
-            err instanceof Error
-              ? err.message
-              : 'Failed to load local settings',
-          )
+          setError(errorMessage(err, 'Failed to load local settings'))
         }
       }
     }
@@ -183,12 +198,17 @@ const App = () => {
           setStatus(nextStatus)
           setLogs(nextLogs)
         }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Refresh failed')
+    } catch (err) {
+      if (!cancelled) {
+        const message = errorMessage(err, 'Refresh failed')
+        if (isSessionMissing(message)) {
+          resetSession('Session ended')
+        } else {
+          setError(message)
         }
       }
     }
+  }
     tick()
     const timer = window.setInterval(tick, STATUS_REFRESH_MS)
     return () => {
@@ -203,7 +223,12 @@ const App = () => {
       const nextStatus = await getStatus(sessionId)
       setStatus(nextStatus)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Status refresh failed')
+      const message = errorMessage(err, 'Status refresh failed')
+      if (isSessionMissing(message)) {
+        resetSession('Session ended')
+      } else {
+        setError(message)
+      }
     }
   }
 
@@ -213,7 +238,12 @@ const App = () => {
       const nextLogs = await logsTail(sessionId, logLines)
       setLogs(nextLogs)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Log fetch failed')
+      const message = errorMessage(err, 'Log fetch failed')
+      if (isSessionMissing(message)) {
+        resetSession('Session ended')
+      } else {
+        setError(message)
+      }
     }
   }
 
@@ -227,14 +257,15 @@ const App = () => {
     }
     try {
       setBusy('Importing profile...')
-      const profileId = await profileImport(importJson)
+      const profileId = await profileImport(importJson, replaceExisting)
       const list = await profilesList()
       setProfiles(list)
       setSelectedProfileId(profileId)
       setImportJson('')
+      setReplaceExisting(false)
       setNotice('Profile imported')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Profile import failed')
+      setError(errorMessage(err, 'Profile import failed'))
     } finally {
       setBusy(null)
     }
@@ -254,7 +285,7 @@ const App = () => {
       const nextStatus = await getStatus(id)
       setStatus(nextStatus)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Connect failed')
+      setError(errorMessage(err, 'Connect failed'))
     } finally {
       setBusy(null)
     }
@@ -270,7 +301,12 @@ const App = () => {
       setLogs([])
       setNotice('Disconnected')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Disconnect failed')
+      const message = errorMessage(err, 'Disconnect failed')
+      if (isSessionMissing(message)) {
+        resetSession('Session already stopped')
+      } else {
+        setError(message)
+      }
     } finally {
       setBusy(null)
     }
@@ -309,7 +345,7 @@ const App = () => {
         updateDraft({ cacheDir: selected })
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Picker failed')
+      setError(errorMessage(err, 'Picker failed'))
     }
   }
 
@@ -348,7 +384,7 @@ const App = () => {
       await setLocalSettings(selectedProfileId, patch)
       setNotice('Local settings saved')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Settings update failed')
+      setError(errorMessage(err, 'Settings update failed'))
     } finally {
       setBusy(null)
     }
@@ -367,7 +403,7 @@ const App = () => {
       await writeClipboard(value)
       return true
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Copy failed')
+      setError(errorMessage(err, 'Copy failed'))
       return false
     }
   }
@@ -378,6 +414,15 @@ const App = () => {
       return
     }
     setShowLogsModal(true)
+  }
+
+  const resetSession = (message?: string) => {
+    setSessionId(null)
+    setStatus(null)
+    setLogs([])
+    if (message) {
+      setNotice(message)
+    }
   }
 
   const clearNotice = () => setNotice(null)
@@ -432,19 +477,31 @@ const App = () => {
                   rows={8}
                 />
                 <div className="panel__footer panel__footer--split">
-                  <button
-                    className="btn btn--ghost"
-                    onClick={() => setShowHelpModal(true)}
-                  >
-                    Need help?
-                  </button>
-                  <button
-                    className="btn btn--primary"
-                    onClick={handleImport}
-                    disabled={!importJson.trim()}
-                  >
-                    Connect
-                  </button>
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={replaceExisting}
+                      onChange={(event) =>
+                        setReplaceExisting(event.target.checked)
+                      }
+                    />
+                    Replace existing device name
+                  </label>
+                  <div className="panel__actions">
+                    <button
+                      className="btn btn--ghost"
+                      onClick={() => setShowHelpModal(true)}
+                    >
+                      Need help?
+                    </button>
+                    <button
+                      className="btn btn--primary"
+                      onClick={handleImport}
+                      disabled={!importJson.trim()}
+                    >
+                      Connect
+                    </button>
+                  </div>
                 </div>
               </div>
             </section>
@@ -469,7 +526,7 @@ const App = () => {
                         onChange={(event) =>
                           updateDraft({ mountpoint: event.target.value })
                         }
-                        placeholder="/Users/alex/Hive"
+                        placeholder="/Users/alex/hive"
                         disabled={selectionLocked}
                       />
                       <button
