@@ -565,7 +565,7 @@ const App = () => {
                         onChange={(event) =>
                           updateDraft({ cacheDir: event.target.value })
                         }
-                        placeholder="/Users/alex/Library/Application Support/Hive/cache"
+                        placeholder="/Users/alex/Library/Application Support/hive/cache"
                         disabled={selectionLocked}
                       />
                       <button

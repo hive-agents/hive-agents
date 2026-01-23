@@ -28,8 +28,8 @@ struct AppPaths {
 
 impl AppPaths {
     fn new() -> Result<Self, String> {
-        let dirs = ProjectDirs::from("com", "hive-agents", "Hive")
-            .or_else(|| ProjectDirs::from("", "", "Hive"));
+        let dirs = ProjectDirs::from("com", "hive-agents", "hive")
+            .or_else(|| ProjectDirs::from("", "", "hive"));
 
         let (data_dir, config_dir, cache_dir) = if let Some(dirs) = dirs {
             (

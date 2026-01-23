@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
+use directories::ProjectDirs;
 use hive_desktop_core::{
     pair_envelope, DesktopError, LogLevel, LogLine, LogSource, SecretStore, SupervisorConfig,
     SupervisorHandle,
@@ -102,9 +103,9 @@ fn print_connect_usage() {
     println!("options:");
     println!("  --envelope <PATH|JSON>   pairing envelope json file or inline json");
     println!("  --mountpoint <PATH>      mountpoint path");
-    println!("  --cache-dir <PATH>       cache directory (default: ~/.cache/hive-agents/<profile>)");
+    println!("  --cache-dir <PATH>       cache directory (default: ~/.cache/hive/<profile>)");
     println!("  --cache-size <MIB>       cache size in MiB (default: 10240)");
-    println!("  --known-hosts <PATH>     known_hosts file (default: ~/.config/hive-agents/known_hosts)");
+    println!("  --known-hosts <PATH>     known_hosts file (default: ~/.config/hive/known_hosts)");
     println!("  --accept-host-key        fetch and pin the host key automatically");
     println!("  --replace-existing       replace existing device name during pairing");
     println!("  --ssh-path <PATH>        ssh binary path (default: ssh)");
@@ -205,13 +206,14 @@ async fn run_connect(opts: ConnectOptions) -> Result<()> {
     let local_settings =
         build_local_settings(&profile, &opts.mountpoint, &cache_dir, opts.cache_size_mib)?;
 
-    ensure_known_hosts(&profile, &opts.known_hosts, opts.accept_host_key)?;
-
     let mut secrets = pairing.response.secrets;
     secrets.insert(
         profile.ssh.identity_key_ref.as_str().to_string(),
         pairing.device_private_key,
     );
+    persist_pairing_artifacts(&profile, &envelope, &local_settings, &secrets)?;
+
+    ensure_known_hosts(&profile, &opts.known_hosts, opts.accept_host_key)?;
     let secrets = MapSecretStore::new(secrets);
     let mut config = SupervisorConfig::default();
     config.known_hosts_path = opts.known_hosts.clone();
@@ -333,6 +335,76 @@ fn read_stdin() -> Result<String> {
     Ok(buffer)
 }
 
+struct CliPaths {
+    profiles_dir: PathBuf,
+    settings_dir: PathBuf,
+    secrets_dir: PathBuf,
+    pairing_dir: PathBuf,
+    known_hosts_path: PathBuf,
+    cache_dir: PathBuf,
+}
+
+fn project_dirs() -> Option<ProjectDirs> {
+    ProjectDirs::from("com", "hive-agents", "hive").or_else(|| ProjectDirs::from("", "", "hive"))
+}
+
+fn resolve_paths() -> Result<CliPaths> {
+    let (data_dir, config_dir, cache_dir) = if let Some(dirs) = project_dirs() {
+        (
+            dirs.data_dir().to_path_buf(),
+            dirs.config_dir().to_path_buf(),
+            dirs.cache_dir().to_path_buf(),
+        )
+    } else {
+        let base = env::current_dir()
+            .map_err(|e| err(format!("failed to resolve data dir: {}", e)))?
+            .join(".hive");
+        (base.clone(), base.clone(), base.join("cache"))
+    };
+
+    let profiles_dir = data_dir.join("profiles");
+    let settings_dir = data_dir.join("settings");
+    let secrets_dir = data_dir.join("secrets");
+    let pairing_dir = data_dir.join("pairing");
+    let known_hosts_path = config_dir.join("known_hosts");
+
+    ensure_dir(&profiles_dir, 0o700)?;
+    ensure_dir(&settings_dir, 0o700)?;
+    ensure_dir(&secrets_dir, 0o700)?;
+    ensure_dir(&pairing_dir, 0o700)?;
+    ensure_dir(&cache_dir, 0o700)?;
+    if let Some(parent) = known_hosts_path.parent() {
+        ensure_dir(parent, 0o700)?;
+    }
+
+    Ok(CliPaths {
+        profiles_dir,
+        settings_dir,
+        secrets_dir,
+        pairing_dir,
+        known_hosts_path,
+        cache_dir,
+    })
+}
+
+fn ensure_dir(path: &Path, mode: u32) -> Result<()> {
+    fs::create_dir_all(path)
+        .map_err(|e| err(format!("failed to create {}: {}", path.display(), e)))?;
+    set_permissions(path, mode)?;
+    Ok(())
+}
+
+fn set_permissions(path: &Path, mode: u32) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(mode);
+        fs::set_permissions(path, perms)
+            .map_err(|e| err(format!("failed to set permissions on {}: {}", path.display(), e)))?;
+    }
+    Ok(())
+}
+
 fn build_local_settings(
     profile: &Profile,
     mountpoint: &Path,
@@ -375,17 +447,129 @@ fn detect_platform() -> Platform {
 
 fn default_cache_dir(profile: &Profile) -> PathBuf {
     let suffix = profile.profile_id.0.to_string();
+    if let Some(dirs) = project_dirs() {
+        return dirs.cache_dir().join(&suffix);
+    }
     if let Ok(home) = env::var("HOME") {
-        return PathBuf::from(home).join(".cache/hive-agents").join(suffix);
+        return PathBuf::from(home).join(".cache/hive").join(suffix);
     }
     PathBuf::from("cache").join(suffix)
 }
 
 fn default_known_hosts_path() -> PathBuf {
+    if let Some(dirs) = project_dirs() {
+        return dirs.config_dir().join("known_hosts");
+    }
     if let Ok(home) = env::var("HOME") {
-        return PathBuf::from(home).join(".config/hive-agents/known_hosts");
+        return PathBuf::from(home).join(".config/hive/known_hosts");
     }
     PathBuf::from("known_hosts")
+}
+
+fn persist_pairing_artifacts(
+    profile: &Profile,
+    envelope: &PairingEnvelope,
+    local_settings: &LocalSettings,
+    secrets: &BTreeMap<String, String>,
+) -> Result<()> {
+    let paths = resolve_paths()?;
+    write_profile(&paths, profile)?;
+    write_local_settings(&paths, profile, local_settings)?;
+    write_pairing_envelope(&paths, profile, envelope)?;
+    merge_and_write_secrets(&paths, profile, secrets)?;
+    Ok(())
+}
+
+fn profile_path(paths: &CliPaths, profile: &Profile) -> PathBuf {
+    paths
+        .profiles_dir
+        .join(format!("{}.json", profile.profile_id.0))
+}
+
+fn settings_path(paths: &CliPaths, profile: &Profile) -> PathBuf {
+    paths
+        .settings_dir
+        .join(format!("{}.json", profile.profile_id.0))
+}
+
+fn secrets_path(paths: &CliPaths, profile: &Profile) -> PathBuf {
+    paths
+        .secrets_dir
+        .join(format!("{}.json", profile.profile_id.0))
+}
+
+fn pairing_path(paths: &CliPaths, profile: &Profile) -> PathBuf {
+    paths
+        .pairing_dir
+        .join(format!("{}.json", profile.profile_id.0))
+}
+
+fn write_profile(paths: &CliPaths, profile: &Profile) -> Result<()> {
+    let path = profile_path(paths, profile);
+    let json = serde_json::to_string_pretty(profile)
+        .map_err(|e| err(format!("failed to serialize profile: {}", e)))?;
+    fs::write(&path, json)
+        .map_err(|e| err(format!("failed to write {}: {}", path.display(), e)))?;
+    Ok(())
+}
+
+fn write_local_settings(
+    paths: &CliPaths,
+    profile: &Profile,
+    settings: &LocalSettings,
+) -> Result<()> {
+    let path = settings_path(paths, profile);
+    let json = serde_json::to_string_pretty(settings)
+        .map_err(|e| err(format!("failed to serialize settings: {}", e)))?;
+    fs::write(&path, json)
+        .map_err(|e| err(format!("failed to write {}: {}", path.display(), e)))?;
+    Ok(())
+}
+
+fn write_pairing_envelope(
+    paths: &CliPaths,
+    profile: &Profile,
+    envelope: &PairingEnvelope,
+) -> Result<()> {
+    let path = pairing_path(paths, profile);
+    let json = serde_json::to_string_pretty(envelope)
+        .map_err(|e| err(format!("failed to serialize pairing envelope: {}", e)))?;
+    fs::write(&path, json)
+        .map_err(|e| err(format!("failed to write {}: {}", path.display(), e)))?;
+    set_permissions(&path, 0o600)?;
+    Ok(())
+}
+
+fn merge_and_write_secrets(
+    paths: &CliPaths,
+    profile: &Profile,
+    updates: &BTreeMap<String, String>,
+) -> Result<()> {
+    let path = secrets_path(paths, profile);
+    let mut secrets = read_secrets(&path)?;
+    for (key, value) in updates {
+        secrets.insert(key.to_string(), value.to_string());
+    }
+    write_secrets(&path, &secrets)
+}
+
+fn read_secrets(path: &Path) -> Result<BTreeMap<String, String>> {
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let content =
+        fs::read_to_string(path).map_err(|e| err(format!("failed to read {}: {}", path.display(), e)))?;
+    serde_json::from_str(&content)
+        .map_err(|e| err(format!("failed to parse secrets: {}", e)))
+}
+
+fn write_secrets(path: &Path, secrets: &BTreeMap<String, String>) -> Result<()> {
+    let json = serde_json::to_string_pretty(secrets)
+        .map_err(|e| err(format!("failed to serialize secrets: {}", e)))?;
+    fs::write(path, json)
+        .map_err(|e| err(format!("failed to write {}: {}", path.display(), e)))?;
+    set_permissions(path, 0o600)?;
+    Ok(())
 }
 
 fn ensure_known_hosts(profile: &Profile, path: &Path, accept: bool) -> Result<()> {

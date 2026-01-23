@@ -716,6 +716,8 @@ fn spawn_desktop_connect(
         cmd.arg("--replace-existing");
     }
 
+    detach_child_process(&mut cmd)?;
+
     let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound && running_as_root() {
             err("sudo not found; install it or rerun with --skip-connect")
@@ -742,6 +744,23 @@ fn spawn_desktop_connect(
         child.id(),
         log_path.display()
     );
+    Ok(())
+}
+
+fn detach_child_process(cmd: &mut Command) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                libc::signal(libc::SIGHUP, libc::SIG_IGN);
+                Ok(())
+            });
+        }
+    }
     Ok(())
 }
 
