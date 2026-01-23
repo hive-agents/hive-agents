@@ -253,14 +253,64 @@ fn chown_path(path: &Path, uid: u32, gid: u32) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn chown_path_recursive(path: &Path, uid: u32, gid: u32) -> Result<()> {
+    let spec = format!("{}:{}", uid, gid);
+    let mut cmd = if running_as_root() {
+        Command::new("chown")
+    } else if can_sudo() {
+        let mut cmd = Command::new("sudo");
+        cmd.arg("-n").arg("chown");
+        cmd
+    } else {
+        return Err(err(format!(
+            "need root or passwordless sudo to chown {}",
+            path.display()
+        )));
+    };
+
+    let status = cmd
+        .arg("-R")
+        .arg(spec)
+        .arg(path)
+        .status()
+        .map_err(|e| err(format!("failed to run chown: {}", e)))?;
+    if !status.success() {
+        return Err(err(format!("failed to chown -R {}", path.display())));
+    }
+    Ok(())
+}
+
+fn ensure_postgres_data_dir(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        // Postgres in the container runs as uid/gid 70 (postgres).
+        set_permissions(path, 0o700)?;
+        chown_path_recursive(path, 70, 70)?;
+    }
+    Ok(())
+}
+
+fn can_sudo() -> bool {
+    let status = Command::new("sudo")
+        .arg("-n")
+        .arg("true")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    matches!(status, Ok(status) if status.success())
+}
+
 fn prepare_dirs(root: &Path) -> Result<()> {
     fs::create_dir_all(root).map_err(|e| err(format!("failed to create {}: {}", root.display(), e)))?;
 
     let data_dir = root.join("data");
     fs::create_dir_all(root.join("bin"))
         .map_err(|e| err(format!("failed to create bin dir: {}", e)))?;
-    fs::create_dir_all(data_dir.join("postgres"))
+    let postgres_dir = data_dir.join("postgres");
+    fs::create_dir_all(&postgres_dir)
         .map_err(|e| err(format!("failed to create postgres data dir: {}", e)))?;
+    ensure_postgres_data_dir(&postgres_dir)?;
     fs::create_dir_all(data_dir.join("seaweed"))
         .map_err(|e| err(format!("failed to create seaweed data dir: {}", e)))?;
     fs::create_dir_all(root.join("state"))
