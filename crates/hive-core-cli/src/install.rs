@@ -697,12 +697,35 @@ fn spawn_desktop_connect(
 
 fn desktop_cli_command(binary: &Path) -> Result<Command> {
     if running_as_root() {
-        let mut cmd = Command::new("sudo");
-        cmd.arg("-H").arg("-u").arg("hive").arg(binary);
-        Ok(cmd)
-    } else {
-        Ok(Command::new(binary))
+        return Ok(sudo_as_hive(binary, false));
     }
+
+    if can_sudo_as_hive() {
+        return Ok(sudo_as_hive(binary, true));
+    }
+
+    Ok(Command::new(binary))
+}
+
+fn sudo_as_hive(binary: &Path, non_interactive: bool) -> Command {
+    let mut cmd = Command::new("sudo");
+    if non_interactive {
+        cmd.arg("-n");
+    }
+    cmd.arg("-H").arg("-u").arg("hive").arg(binary);
+    cmd
+}
+
+fn can_sudo_as_hive() -> bool {
+    let status = Command::new("sudo")
+        .arg("-n")
+        .arg("-u")
+        .arg("hive")
+        .arg("true")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    matches!(status, Ok(status) if status.success())
 }
 
 fn running_as_root() -> bool {
