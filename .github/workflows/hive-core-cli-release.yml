@@ -1,0 +1,23 @@
+name: hive-core-cli-release
+on:
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    if: github.event.release.target_commitish == 'master'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build hive-core-cli
+        run: cargo build -p hive-core-cli --release --locked
+      - name: Package tarball
+        run: tar -czf hive-core-cli-x86_64-unknown-linux-gnu.tar.gz -C target/release hive-core
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: hive-core-cli-x86_64-unknown-linux-gnu.tar.gz
