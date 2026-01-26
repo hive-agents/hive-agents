@@ -29,6 +29,10 @@ pub struct InstallOptions {
     pub postgres_db: String,
     pub wait_seconds: u64,
     pub pairing_binary: Option<PathBuf>,
+    pub b2_endpoint: Option<String>,
+    pub b2_bucket: Option<String>,
+    pub b2_key_id: Option<String>,
+    pub b2_application_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +42,7 @@ struct EnvConfig {
     postgres_password: String,
     s3_access_key: String,
     s3_secret_key: String,
+    s3_endpoint: Option<String>,
     bucket: String,
     volume: String,
 }
@@ -57,6 +62,10 @@ pub fn parse_args(args: &mut VecDeque<String>) -> Result<InstallOptions> {
         postgres_db: "juicefs_meta".to_string(),
         wait_seconds: 60,
         pairing_binary: None,
+        b2_endpoint: None,
+        b2_bucket: None,
+        b2_key_id: None,
+        b2_application_key: None,
     };
 
     while let Some(arg) = args.pop_front() {
@@ -82,6 +91,12 @@ pub fn parse_args(args: &mut VecDeque<String>) -> Result<InstallOptions> {
                     .parse::<u64>()
                     .map_err(|_| err("--wait-seconds must be an integer"))?;
             }
+            "--b2-endpoint" => opts.b2_endpoint = Some(take_value(args, "--b2-endpoint")?),
+            "--b2-bucket" => opts.b2_bucket = Some(take_value(args, "--b2-bucket")?),
+            "--b2-key-id" => opts.b2_key_id = Some(take_value(args, "--b2-key-id")?),
+            "--b2-application-key" => {
+                opts.b2_application_key = Some(take_value(args, "--b2-application-key")?)
+            }
             _ => return Err(err(format!("unknown install flag: {}", arg))),
         }
     }
@@ -96,23 +111,34 @@ pub fn run(opts: InstallOptions) -> Result<()> {
         ));
     }
 
-    prepare_dirs(&opts.root)?;
+    let b2 = resolve_b2_config(&opts)?;
+    let uses_external_s3 = b2.is_some() || env_has_external_s3(&opts.root);
+    let uses_local_s3 = !uses_external_s3;
+
+    prepare_dirs(&opts.root, uses_local_s3)?;
     if !opts.skip_ssh_user {
         ensure_device_authorized_keys()?;
     }
-    write_compose(&opts.root, opts.force, opts.replace_existing)?;
-    warn_if_compose_outdated(&opts.root, opts.force)?;
+    write_compose(
+        &opts.root,
+        opts.force,
+        opts.replace_existing,
+        uses_local_s3,
+    )?;
+    warn_if_compose_outdated(&opts.root, opts.force, uses_local_s3)?;
 
-    let env_config = ensure_env(&opts.root, &opts)?;
-    ensure_s3_config(&opts.root, &env_config, opts.force)?;
+    let env_config = ensure_env(&opts.root, &opts, b2.as_ref())?;
+    if uses_local_s3 {
+        ensure_s3_config(&opts.root, &env_config, opts.force)?;
+    }
     ensure_pairing_binary(&opts.root, opts.pairing_binary.as_deref())?;
 
     if !opts.skip_up {
-        run_docker_compose(&opts.root)?;
+        run_docker_compose(&opts.root, !uses_local_s3)?;
     }
 
     if !opts.skip_format {
-        format_juicefs(&opts.root, &env_config, opts.wait_seconds)?;
+        format_juicefs(&opts.root, &env_config, opts.wait_seconds, uses_local_s3)?;
     }
 
     if !opts.skip_connect {
@@ -312,7 +338,7 @@ fn can_sudo() -> bool {
     matches!(status, Ok(status) if status.success())
 }
 
-fn prepare_dirs(root: &Path) -> Result<()> {
+fn prepare_dirs(root: &Path, uses_local_s3: bool) -> Result<()> {
     fs::create_dir_all(root).map_err(|e| err(format!("failed to create {}: {}", root.display(), e)))?;
 
     let data_dir = root.join("data");
@@ -322,24 +348,41 @@ fn prepare_dirs(root: &Path) -> Result<()> {
     fs::create_dir_all(&postgres_dir)
         .map_err(|e| err(format!("failed to create postgres data dir: {}", e)))?;
     ensure_postgres_data_dir(&postgres_dir)?;
-    fs::create_dir_all(data_dir.join("seaweed"))
-        .map_err(|e| err(format!("failed to create seaweed data dir: {}", e)))?;
     fs::create_dir_all(root.join("state"))
         .map_err(|e| err(format!("failed to create state dir: {}", e)))?;
-    fs::create_dir_all(root.join("state").join("seaweedfs"))
-        .map_err(|e| err(format!("failed to create seaweed state dir: {}", e)))?;
+    if uses_local_s3 {
+        fs::create_dir_all(data_dir.join("seaweed"))
+            .map_err(|e| err(format!("failed to create seaweed data dir: {}", e)))?;
+        fs::create_dir_all(root.join("state").join("seaweedfs"))
+            .map_err(|e| err(format!("failed to create seaweed state dir: {}", e)))?;
+    }
     fs::create_dir_all(root.join("state").join("pairing"))
         .map_err(|e| err(format!("failed to create pairing state dir: {}", e)))?;
     Ok(())
 }
 
-fn write_compose(root: &Path, force: bool, replace_existing: bool) -> Result<()> {
+fn write_compose(
+    root: &Path,
+    force: bool,
+    replace_existing: bool,
+    uses_local_s3: bool,
+) -> Result<()> {
     let compose_path = root.join("compose.yml");
     if compose_path.exists() && !force {
         if replace_existing {
             return Err(err(
                 "compose.yml already exists; rerun with --force to enable --replace-existing",
             ));
+        }
+        if !uses_local_s3 {
+            let existing = fs::read_to_string(&compose_path)
+                .map_err(|e| err(format!("failed to read {}: {}", compose_path.display(), e)))?;
+            let stripped = strip_seaweed_service(&existing)?;
+            if stripped != existing {
+                fs::write(&compose_path, stripped).map_err(|e| {
+                    err(format!("failed to write {}: {}", compose_path.display(), e))
+                })?;
+            }
         }
         return Ok(());
     }
@@ -357,12 +400,16 @@ fn write_compose(root: &Path, force: bool, replace_existing: bool) -> Result<()>
         }
     }
 
+    if !uses_local_s3 {
+        content = strip_seaweed_service(&content)?;
+    }
+
     fs::write(&compose_path, content)
         .map_err(|e| err(format!("failed to write {}: {}", compose_path.display(), e)))?;
     Ok(())
 }
 
-fn warn_if_compose_outdated(root: &Path, force: bool) -> Result<()> {
+fn warn_if_compose_outdated(root: &Path, force: bool, uses_local_s3: bool) -> Result<()> {
     if force {
         return Ok(());
     }
@@ -378,7 +425,7 @@ fn warn_if_compose_outdated(root: &Path, force: bool) -> Result<()> {
     let has_pairing = content.contains("hive-core-pairing")
         && content.contains("pairing:");
 
-    if has_seaweed_config && has_pairing {
+    if has_pairing && has_seaweed_config == uses_local_s3 {
         return Ok(());
     }
 
@@ -388,7 +435,11 @@ fn warn_if_compose_outdated(root: &Path, force: bool) -> Result<()> {
     Ok(())
 }
 
-fn ensure_env(root: &Path, opts: &InstallOptions) -> Result<EnvConfig> {
+fn ensure_env(
+    root: &Path,
+    opts: &InstallOptions,
+    b2: Option<&B2Config>,
+) -> Result<EnvConfig> {
     let env_path = root.join(".env");
     let mut existing = if env_path.exists() {
         read_env_file(&env_path)?
@@ -396,27 +447,74 @@ fn ensure_env(root: &Path, opts: &InstallOptions) -> Result<EnvConfig> {
         HashMap::new()
     };
 
-    let mut missing = Vec::new();
+    let mut touched = false;
 
-    let postgres_user = ensure_value(&mut existing, &mut missing, "POSTGRES_USER", opts.postgres_user.clone());
-    let postgres_db = ensure_value(&mut existing, &mut missing, "POSTGRES_DB", opts.postgres_db.clone());
+    if let Some(b2) = b2 {
+        existing.insert("S3_ENDPOINT".to_string(), b2.endpoint.clone());
+        existing.insert("HIVE_BUCKET".to_string(), b2.bucket.clone());
+        existing.insert("S3_ACCESS_KEY".to_string(), b2.key_id.clone());
+        existing.insert("S3_SECRET_KEY".to_string(), b2.application_key.clone());
+        touched = true;
+    }
 
-    let postgres_password = ensure_secret(&mut existing, &mut missing, "POSTGRES_PASSWORD", 24)?;
-    let s3_access_key = ensure_secret(&mut existing, &mut missing, "S3_ACCESS_KEY", 16)?;
-    let s3_secret_key = ensure_secret(&mut existing, &mut missing, "S3_SECRET_KEY", 24)?;
+    let postgres_user = ensure_value(
+        &mut existing,
+        &mut touched,
+        "POSTGRES_USER",
+        opts.postgres_user.clone(),
+    );
+    let postgres_db = ensure_value(
+        &mut existing,
+        &mut touched,
+        "POSTGRES_DB",
+        opts.postgres_db.clone(),
+    );
 
-    let bucket = ensure_value(&mut existing, &mut missing, "HIVE_BUCKET", opts.bucket.clone());
-    let volume = ensure_value(&mut existing, &mut missing, "HIVE_VOLUME", opts.volume.clone());
+    let s3_endpoint = existing
+        .get("S3_ENDPOINT")
+        .cloned()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty());
 
-    if !env_path.exists() {
+    let postgres_password =
+        ensure_secret(&mut existing, &mut touched, "POSTGRES_PASSWORD", 24)?;
+
+    let s3_access_key = if s3_endpoint.is_some() {
+        existing
+            .get("S3_ACCESS_KEY")
+            .cloned()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| err("S3_ACCESS_KEY is required when S3_ENDPOINT is set"))?
+    } else {
+        ensure_secret(&mut existing, &mut touched, "S3_ACCESS_KEY", 16)?
+    };
+    let s3_secret_key = if s3_endpoint.is_some() {
+        existing
+            .get("S3_SECRET_KEY")
+            .cloned()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| err("S3_SECRET_KEY is required when S3_ENDPOINT is set"))?
+    } else {
+        ensure_secret(&mut existing, &mut touched, "S3_SECRET_KEY", 24)?
+    };
+
+    let bucket = ensure_value(&mut existing, &mut touched, "HIVE_BUCKET", opts.bucket.clone());
+    let volume = ensure_value(&mut existing, &mut touched, "HIVE_VOLUME", opts.volume.clone());
+
+    if b2.is_some() && s3_endpoint.is_none() {
+        return Err(err("missing S3_ENDPOINT after applying B2 config"));
+    }
+
+    if !env_path.exists() || touched {
         let mut content = String::from("# Generated by hive-core install\n");
-        for (key, value) in &missing {
+        let mut keys: Vec<_> = existing.keys().collect();
+        keys.sort();
+        for key in keys {
+            let value = existing.get(key).map(|v| v.as_str()).unwrap_or("");
             content.push_str(&format!("{}={}\n", key, value));
         }
         fs::write(&env_path, content)
             .map_err(|e| err(format!("failed to write {}: {}", env_path.display(), e)))?;
-    } else if !missing.is_empty() {
-        append_env_values(&env_path, &missing)?;
     }
 
     set_env_permissions(&env_path)?;
@@ -427,6 +525,7 @@ fn ensure_env(root: &Path, opts: &InstallOptions) -> Result<EnvConfig> {
         postgres_password,
         s3_access_key,
         s3_secret_key,
+        s3_endpoint,
         bucket,
         volume,
     })
@@ -434,7 +533,7 @@ fn ensure_env(root: &Path, opts: &InstallOptions) -> Result<EnvConfig> {
 
 fn ensure_value(
     existing: &mut HashMap<String, String>,
-    missing: &mut Vec<(String, String)>,
+    touched: &mut bool,
     key: &str,
     default_value: String,
 ) -> String {
@@ -442,7 +541,7 @@ fn ensure_value(
         Some(value) if !value.is_empty() => value.clone(),
         _ => {
             existing.insert(key.to_string(), default_value.clone());
-            missing.push((key.to_string(), default_value.clone()));
+            *touched = true;
             default_value
         }
     }
@@ -450,7 +549,7 @@ fn ensure_value(
 
 fn ensure_secret(
     existing: &mut HashMap<String, String>,
-    missing: &mut Vec<(String, String)>,
+    touched: &mut bool,
     key: &str,
     bytes: usize,
 ) -> Result<String> {
@@ -462,7 +561,7 @@ fn ensure_secret(
 
     let secret = generate_hex_secret(bytes)?;
     existing.insert(key.to_string(), secret.clone());
-    missing.push((key.to_string(), secret.clone()));
+    *touched = true;
     Ok(secret)
 }
 
@@ -480,30 +579,6 @@ fn read_env_file(path: &Path) -> Result<HashMap<String, String>> {
         }
     }
     Ok(map)
-}
-
-fn append_env_values(path: &Path, values: &[(String, String)]) -> Result<()> {
-    let needs_newline = match fs::read(path) {
-        Ok(bytes) => bytes.last().map(|b| *b != b'\n').unwrap_or(false),
-        Err(_) => false,
-    };
-
-    let mut file = OpenOptions::new()
-        .append(true)
-        .open(path)
-        .map_err(|e| err(format!("failed to open {}: {}", path.display(), e)))?;
-
-    if needs_newline {
-        file.write_all(b"\n")
-            .map_err(|e| err(format!("failed to write {}: {}", path.display(), e)))?;
-    }
-
-    for (key, value) in values {
-        writeln!(file, "{}={}", key, value)
-            .map_err(|e| err(format!("failed to write {}: {}", path.display(), e)))?;
-    }
-
-    Ok(())
 }
 
 fn set_env_permissions(path: &Path) -> Result<()> {
@@ -571,11 +646,63 @@ fn generate_hex_secret(bytes: usize) -> Result<String> {
     Ok(output)
 }
 
-fn run_docker_compose(root: &Path) -> Result<()> {
-    let status = Command::new("docker")
-        .arg("compose")
-        .arg("up")
-        .arg("-d")
+#[derive(Debug, Clone)]
+struct B2Config {
+    endpoint: String,
+    bucket: String,
+    key_id: String,
+    application_key: String,
+}
+
+fn resolve_b2_config(opts: &InstallOptions) -> Result<Option<B2Config>> {
+    let endpoint = opts.b2_endpoint.clone().unwrap_or_default().trim().to_string();
+    let bucket = opts.b2_bucket.clone().unwrap_or_default().trim().to_string();
+    let key_id = opts.b2_key_id.clone().unwrap_or_default().trim().to_string();
+    let application_key = opts
+        .b2_application_key
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    let any = !endpoint.is_empty() || !bucket.is_empty() || !key_id.is_empty() || !application_key.is_empty();
+    if !any {
+        return Ok(None);
+    }
+    if endpoint.is_empty() || bucket.is_empty() || key_id.is_empty() || application_key.is_empty() {
+        return Err(err(
+            "B2 config requires --b2-endpoint, --b2-bucket, --b2-key-id, and --b2-application-key",
+        ));
+    }
+
+    Ok(Some(B2Config {
+        endpoint: endpoint.trim_end_matches('/').to_string(),
+        bucket,
+        key_id,
+        application_key,
+    }))
+}
+
+fn env_has_external_s3(root: &Path) -> bool {
+    let env_path = root.join(".env");
+    if !env_path.exists() {
+        return false;
+    }
+    if let Ok(env) = read_env_file(&env_path) {
+        if let Some(value) = env.get("S3_ENDPOINT") {
+            return !value.trim().is_empty();
+        }
+    }
+    false
+}
+
+fn run_docker_compose(root: &Path, remove_orphans: bool) -> Result<()> {
+    let mut cmd = Command::new("docker");
+    cmd.arg("compose").arg("up").arg("-d");
+    if remove_orphans {
+        cmd.arg("--remove-orphans");
+    }
+    let status = cmd
         .current_dir(root)
         .status()
         .map_err(|e| err(format!("failed to run docker compose: {}", e)))?;
@@ -753,7 +880,7 @@ fn mount_local_juicefs(env: &EnvConfig, mountpoint: &Path, root: &Path) -> Resul
         chown_path(&cache_dir, user.uid, user.gid)?;
     }
 
-    let bucket_url = format!("http://127.0.0.1:8333/{}", env.bucket);
+    let bucket_url = s3_bucket_url(env, 8333);
     let meta_url = format!(
         "postgres://{}@127.0.0.1:5432/{}",
         env.postgres_user, env.postgres_db
@@ -968,16 +1095,23 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn format_juicefs(root: &Path, env: &EnvConfig, wait_seconds: u64) -> Result<()> {
+fn format_juicefs(
+    root: &Path,
+    env: &EnvConfig,
+    wait_seconds: u64,
+    uses_local_s3: bool,
+) -> Result<()> {
     let marker_path = root.join("state").join("juicefs.format");
     if marker_path.exists() {
         return Ok(());
     }
 
     wait_for_postgres_ready(root, env, wait_seconds)?;
-    wait_for_s3_ready("127.0.0.1:8333", wait_seconds)?;
+    if uses_local_s3 {
+        wait_for_s3_ready("127.0.0.1:8333", wait_seconds)?;
+    }
 
-    let bucket_url = format!("http://127.0.0.1:8333/{}", env.bucket);
+    let bucket_url = s3_bucket_url(env, 8333);
     let meta_url = format!(
         "postgres://{}@127.0.0.1:5432/{}",
         env.postgres_user, env.postgres_db
@@ -1090,6 +1224,34 @@ fn write_format_marker(path: &Path, env: &EnvConfig) -> Result<()> {
     fs::write(path, content)
         .map_err(|e| err(format!("failed to write {}: {}", path.display(), e)))?;
     Ok(())
+}
+
+fn s3_bucket_url(env: &EnvConfig, local_port: u16) -> String {
+    if let Some(endpoint) = env.s3_endpoint.as_ref() {
+        format!("{}/{}", endpoint.trim_end_matches('/'), env.bucket)
+    } else {
+        format!("http://127.0.0.1:{}/{}", local_port, env.bucket)
+    }
+}
+
+fn strip_seaweed_service(content: &str) -> Result<String> {
+    let mut output = Vec::new();
+    let mut skipping = false;
+    for line in content.lines() {
+        if !skipping && line.starts_with("  seaweedfs:") {
+            skipping = true;
+            continue;
+        }
+        if skipping {
+            if line.starts_with("  ") && !line.starts_with("    ") {
+                skipping = false;
+            } else {
+                continue;
+            }
+        }
+        output.push(line);
+    }
+    Ok(output.join("\n") + "\n")
 }
 
 fn print_install_hints(root: &Path, skip_connect: bool) -> Result<()> {

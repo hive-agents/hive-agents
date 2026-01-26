@@ -120,6 +120,10 @@ fn print_install_usage() {
     println!("  --postgres-db <DB>      postgres db (default: juicefs_meta)");
     println!("  --pairing-binary <PATH> pairing binary path (skips build)");
     println!("  --wait-seconds <N>      wait for services before format (default: 60)");
+    println!("  --b2-endpoint <URL>     Backblaze B2 S3 endpoint (disables local seaweedfs)");
+    println!("  --b2-bucket <NAME>      Backblaze B2 bucket name");
+    println!("  --b2-key-id <KEY>       Backblaze B2 key ID");
+    println!("  --b2-application-key <KEY> Backblaze B2 application key");
 }
 
 fn print_status_usage() {

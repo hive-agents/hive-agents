@@ -95,6 +95,12 @@ pub fn run(opts: ConnectOptions) -> Result<()> {
         .cloned()
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "hive".to_string());
+    let s3_endpoint = env
+        .get("S3_ENDPOINT")
+        .cloned()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty());
+    let uses_local_s3 = s3_endpoint.is_none();
 
     let fingerprint = if let Some(value) = opts.fingerprint.clone() {
         value
@@ -105,6 +111,32 @@ pub fn run(opts: ConnectOptions) -> Result<()> {
     let profile_id = ProfileId(Uuid::new_v4());
     let created_at: DateTime<Utc> = Utc::now();
     let secret_prefix = format!("keychain:hive-agents:profile/{}/", profile_id.0);
+
+    let mut tunnels = vec![TunnelConfig {
+        name: "postgres".to_string(),
+        remote_host: "127.0.0.1".to_string(),
+        remote_port: 5432,
+        local_bind_host: "127.0.0.1".to_string(),
+        local_port: 0,
+    }];
+    if uses_local_s3 {
+        tunnels.push(TunnelConfig {
+            name: "s3".to_string(),
+            remote_host: "127.0.0.1".to_string(),
+            remote_port: 8333,
+            local_bind_host: "127.0.0.1".to_string(),
+            local_port: 0,
+        });
+    }
+
+    let (endpoint_mode, bucket_url_template) = if let Some(endpoint) = s3_endpoint {
+        (EndpointMode::Direct, format!("{}/{}", endpoint, bucket))
+    } else {
+        (
+            EndpointMode::Tunneled,
+            format!("http://127.0.0.1:{{local_s3_port}}/{}", bucket),
+        )
+    };
 
     let profile = Profile {
         profile_version: PROFILE_VERSION,
@@ -118,22 +150,7 @@ pub fn run(opts: ConnectOptions) -> Result<()> {
             host_key_fingerprint_sha256: fingerprint,
             identity_key_ref: SecretRef(format!("{}ssh_ed25519", secret_prefix)),
         },
-        tunnels: vec![
-            TunnelConfig {
-                name: "postgres".to_string(),
-                remote_host: "127.0.0.1".to_string(),
-                remote_port: 5432,
-                local_bind_host: "127.0.0.1".to_string(),
-                local_port: 0,
-            },
-            TunnelConfig {
-                name: "s3".to_string(),
-                remote_host: "127.0.0.1".to_string(),
-                remote_port: 8333,
-                local_bind_host: "127.0.0.1".to_string(),
-                local_port: 0,
-            },
-        ],
+        tunnels,
         juicefs: JuiceFsConfig {
             volume_name: volume.clone(),
             meta: JuiceFsMetaConfig {
@@ -149,11 +166,8 @@ pub fn run(opts: ConnectOptions) -> Result<()> {
             object: JuiceFsObjectConfig {
                 storage: StorageKind::S3,
                 bucket_name: bucket.clone(),
-                endpoint_mode: EndpointMode::Tunneled,
-                bucket_url_template: format!(
-                    "http://127.0.0.1:{{local_s3_port}}/{}",
-                    bucket
-                ),
+                endpoint_mode,
+                bucket_url_template,
                 access_key_ref: SecretRef(format!("{}s3_access_key", secret_prefix)),
                 secret_key_ref: SecretRef(format!("{}s3_secret_key", secret_prefix)),
             },
