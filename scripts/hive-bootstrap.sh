@@ -59,8 +59,10 @@ HIVE_INSTALL_EXTRA_ARGS="${HIVE_INSTALL_EXTRA_ARGS:-}"
 HIVE_CORE_RELEASE_API="${HIVE_CORE_RELEASE_API:-https://api.github.com/repos/hive-agents/hive-agents/releases/latest}"
 HIVE_CORE_ASSET="${HIVE_CORE_ASSET:-hive-core-cli-x86_64-unknown-linux-gnu.tar.gz}"
 HIVE_PAIRING_ASSET="${HIVE_PAIRING_ASSET:-hive-core-pairing-x86_64-unknown-linux-gnu.tar.gz}"
+HIVE_DESKTOP_CLI_ASSET="${HIVE_DESKTOP_CLI_ASSET:-hive-desktop-cli-x86_64-unknown-linux-gnu.tar.gz}"
 HIVE_CORE_URL="${HIVE_CORE_URL:-}"
 HIVE_PAIRING_URL="${HIVE_PAIRING_URL:-}"
+HIVE_DESKTOP_CLI_URL="${HIVE_DESKTOP_CLI_URL:-}"
 HIVE_BUILD_FROM_SOURCE="${HIVE_BUILD_FROM_SOURCE:-}"
 
 HIVE_AGENTS_GIT_URL="${HIVE_AGENTS_GIT_URL:-https://github.com/hive-agents/hive-agents.git}"
@@ -83,6 +85,7 @@ fi
 
 HIVE_CORE_BIN="${HIVE_CORE_BIN:-/usr/local/bin/hive-core}"
 HIVE_PAIRING_BIN="${HIVE_PAIRING_BIN:-/usr/local/bin/hive-core-pairing}"
+HIVE_DESKTOP_CLI_BIN="${HIVE_DESKTOP_CLI_BIN:-/usr/local/bin/hive-desktop-cli}"
 
 if [ "${OS}" = "darwin" ] && [ -z "${HIVE_BUILD_FROM_SOURCE}" ] && [ -z "${HIVE_CORE_URL}" ]; then
   HIVE_BUILD_FROM_SOURCE=1
@@ -269,14 +272,26 @@ build_from_source() {
     run bash -lc "cd '${repo_dir}' && git checkout '${HIVE_AGENTS_GIT_REF}'"
   fi
 
-  run bash -lc "cd '${repo_dir}' && cargo build -p hive-core-cli -p hive-core-pairing --release --locked"
+  if [ "${HIVE_SKIP_CONNECT}" != "1" ]; then
+    run bash -lc "cd '${repo_dir}' && cargo build -p hive-core-cli -p hive-core-pairing -p hive-desktop-cli --release --locked"
+    run install -m 0755 "${repo_dir}/target/release/hive-desktop-cli" "${HIVE_DESKTOP_CLI_BIN}"
+  else
+    run bash -lc "cd '${repo_dir}' && cargo build -p hive-core-cli -p hive-core-pairing --release --locked"
+  fi
   run install -m 0755 "${repo_dir}/target/release/hive-core" "${HIVE_CORE_BIN}"
   run install -m 0755 "${repo_dir}/target/release/hive-core-pairing" "${HIVE_PAIRING_BIN}"
 }
 
 ensure_release_binaries() {
+  local need_desktop_cli=1
+  if [ "${HIVE_SKIP_CONNECT}" = "1" ]; then
+    need_desktop_cli=0
+  fi
+
   if [ -x "${HIVE_CORE_BIN}" ] && [ -x "${HIVE_PAIRING_BIN}" ]; then
-    return 0
+    if [ "${need_desktop_cli}" = "0" ] || [ -x "${HIVE_DESKTOP_CLI_BIN}" ]; then
+      return 0
+    fi
   fi
 
   if [ -z "${HIVE_CORE_URL}" ]; then
@@ -287,6 +302,11 @@ ensure_release_binaries() {
   if [ -z "${HIVE_PAIRING_URL}" ]; then
     if [ "${OS}" = "linux" ]; then
       HIVE_PAIRING_URL="$(resolve_release_asset "${HIVE_PAIRING_ASSET}")"
+    fi
+  fi
+  if [ "${need_desktop_cli}" = "1" ] && [ -z "${HIVE_DESKTOP_CLI_URL}" ]; then
+    if [ "${OS}" = "linux" ]; then
+      HIVE_DESKTOP_CLI_URL="$(resolve_release_asset "${HIVE_DESKTOP_CLI_ASSET}")"
     fi
   fi
 
@@ -303,6 +323,19 @@ ensure_release_binaries() {
   install_release_binary "${HIVE_CORE_URL}" "hive-core" "${HIVE_CORE_BIN}"
   log "installing hive-core pairing"
   install_release_binary "${HIVE_PAIRING_URL}" "hive-core-pairing" "${HIVE_PAIRING_BIN}"
+
+  if [ "${need_desktop_cli}" = "1" ]; then
+    if [ -z "${HIVE_DESKTOP_CLI_URL}" ]; then
+      if [ -n "${HIVE_BUILD_FROM_SOURCE}" ]; then
+        build_from_source
+        return 0
+      fi
+      echo "missing release URL; set HIVE_DESKTOP_CLI_URL or HIVE_BUILD_FROM_SOURCE=1" >&2
+      exit 1
+    fi
+    log "installing hive-desktop CLI"
+    install_release_binary "${HIVE_DESKTOP_CLI_URL}" "hive-desktop-cli" "${HIVE_DESKTOP_CLI_BIN}"
+  fi
 }
 
 maybe_mount_volume() {

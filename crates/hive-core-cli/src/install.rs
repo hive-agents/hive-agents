@@ -696,6 +696,11 @@ fn connect_and_mount(opts: &InstallOptions, env: &EnvConfig) -> Result<()> {
 }
 
 fn ensure_desktop_cli_binary() -> Result<PathBuf> {
+    let installed = PathBuf::from("/usr/local/bin/hive-desktop-cli");
+    if installed.exists() {
+        return Ok(installed);
+    }
+
     let repo_root = repo_root();
     let cargo_toml = repo_root.join("Cargo.toml");
     if !cargo_toml.exists() {
