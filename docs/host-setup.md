@@ -3,6 +3,28 @@
 This guide captures a working host setup flow and the S3/SeaweedFS details that
 `hive-core` expects.
 
+## Bootstrap script
+
+Use the repo bootstrap script for Ubuntu hosts:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hive-agents/hive-agents/master/scripts/hive-bootstrap.sh -o /tmp/hive-bootstrap.sh
+sudo HIVE_DOMAIN=foo.hive.example HIVE_ROOT=/opt/hive-core /tmp/hive-bootstrap.sh
+```
+
+macOS (builds from source by default):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hive-agents/hive-agents/master/scripts/hive-bootstrap.sh -o /tmp/hive-bootstrap.sh
+HIVE_BUILD_FROM_SOURCE=1 HIVE_DOMAIN=foo.hive.example /tmp/hive-bootstrap.sh
+```
+
+Run the macOS bootstrap as a normal user (sudo is used for privileged steps).
+
+`infra/hive-core/Caddyfile.example` mirrors the Apiary routes with a
+`__HIVE_DOMAIN__` placeholder. Copy it to `/etc/caddy/Caddyfile` (or supply
+`HIVE_DOMAIN` to the bootstrap script) and add TLS directives if needed.
+
 ## Firewall
 
 ```bash

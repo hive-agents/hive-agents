@@ -1,0 +1,27 @@
+__HIVE_DOMAIN__ {
+  handle /_apiary/v1/notify {
+    reverse_proxy 127.0.0.1:8790
+  }
+
+  handle /hive-pair {
+    reverse_proxy localhost:8081
+  }
+
+  handle /cam-ws {
+    reverse_proxy localhost:8787
+  }
+
+  handle /cam-auth* {
+    reverse_proxy localhost:8787
+  }
+
+  handle /cam-log* {
+    reverse_proxy localhost:8787
+  }
+
+  handle {
+    root * /var/lib/hive/src/claude-agent-mobile/dist
+    file_server
+    encode gzip
+  }
+}

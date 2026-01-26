@@ -13,11 +13,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build hive-core-cli
-        run: cargo build -p hive-core-cli --release --locked
-      - name: Package tarball
+      - name: Build release binaries
+        run: cargo build -p hive-core-cli -p hive-core-pairing --release --locked
+      - name: Package hive-core-cli tarball
         run: tar -czf hive-core-cli-x86_64-unknown-linux-gnu.tar.gz -C target/release hive-core
+      - name: Package hive-core-pairing tarball
+        run: tar -czf hive-core-pairing-x86_64-unknown-linux-gnu.tar.gz -C target/release hive-core-pairing
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
-          files: hive-core-cli-x86_64-unknown-linux-gnu.tar.gz
+          files: |
+            hive-core-cli-x86_64-unknown-linux-gnu.tar.gz
+            hive-core-pairing-x86_64-unknown-linux-gnu.tar.gz
