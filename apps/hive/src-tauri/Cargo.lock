@@ -1326,7 +1326,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hive"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
  "directories",
  "hive-desktop-core",
@@ -1343,7 +1343,7 @@ dependencies = [
 
 [[package]]
 name = "hive-desktop-core"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
  "chrono",
  "hive-protocol",
@@ -1358,7 +1358,7 @@ dependencies = [
 
 [[package]]
 name = "hive-protocol"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
  "chrono",
  "schemars 0.8.22",
