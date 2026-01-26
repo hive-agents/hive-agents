@@ -116,7 +116,7 @@ pub fn run(opts: InstallOptions) -> Result<()> {
     }
 
     if !opts.skip_connect {
-        connect_and_mount(&opts)?;
+        connect_and_mount(&opts, &env_config)?;
     }
 
     print_install_hints(&opts.root, opts.skip_connect)?;
@@ -654,35 +654,45 @@ fn ensure_pairing_binary(root: &Path, pairing_binary: Option<&Path>) -> Result<(
     Ok(())
 }
 
-fn connect_and_mount(opts: &InstallOptions) -> Result<()> {
+fn connect_and_mount(opts: &InstallOptions, env: &EnvConfig) -> Result<()> {
     let mountpoint = PathBuf::from("/home/hive/hive");
     ensure_mountpoint(&mountpoint)?;
 
-    let envelope_path = temp_envelope_path();
-    let connect_opts = connect::ConnectOptions {
-        root: opts.root.clone(),
-        host: Some("127.0.0.1".to_string()),
-        port: 22,
-        user: "hivec".to_string(),
-        display_name: "Hive".to_string(),
-        out: Some(envelope_path.clone()),
-        pretty: false,
-        fingerprint: None,
-    };
-    connect::run(connect_opts)?;
-    set_permissions(&envelope_path, 0o644)?;
+    match ensure_desktop_cli_binary() {
+        Ok(desktop_cli) => {
+            let envelope_path = temp_envelope_path();
+            let connect_opts = connect::ConnectOptions {
+                root: opts.root.clone(),
+                host: Some("127.0.0.1".to_string()),
+                port: 22,
+                user: "hivec".to_string(),
+                display_name: "Hive".to_string(),
+                out: Some(envelope_path.clone()),
+                pretty: false,
+                fingerprint: None,
+            };
+            connect::run(connect_opts)?;
+            set_permissions(&envelope_path, 0o644)?;
 
-    let desktop_cli = ensure_desktop_cli_binary()?;
-    spawn_desktop_connect(
-        &desktop_cli,
-        &envelope_path,
-        &mountpoint,
-        opts.replace_existing,
-        &opts.root,
-    )?;
+            spawn_desktop_connect(
+                &desktop_cli,
+                &envelope_path,
+                &mountpoint,
+                opts.replace_existing,
+                &opts.root,
+            )?;
 
-    let _ = fs::remove_file(&envelope_path);
-    Ok(())
+            let _ = fs::remove_file(&envelope_path);
+            Ok(())
+        }
+        Err(err) => {
+            eprintln!(
+                "warning: {}. Falling back to local JuiceFS mount.",
+                err
+            );
+            mount_local_juicefs(env, &mountpoint, &opts.root)
+        }
+    }
 }
 
 fn ensure_desktop_cli_binary() -> Result<PathBuf> {
@@ -715,6 +725,82 @@ fn ensure_desktop_cli_binary() -> Result<PathBuf> {
         )));
     }
     Ok(binary)
+}
+
+fn mount_local_juicefs(env: &EnvConfig, mountpoint: &Path, root: &Path) -> Result<()> {
+    let log_path = root.join("state").join("host-mount.log");
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| err(format!("failed to open {}: {}", log_path.display(), e)))?;
+
+    let cache_dir = root
+        .parent()
+        .map(|parent| parent.join("cache"))
+        .unwrap_or_else(|| PathBuf::from("/var/lib/hive/cache"));
+    fs::create_dir_all(&cache_dir)
+        .map_err(|e| err(format!("failed to create {}: {}", cache_dir.display(), e)))?;
+    #[cfg(unix)]
+    {
+        let user = ensure_user("hive", "/bin/bash")?;
+        set_permissions(&cache_dir, 0o700)?;
+        chown_path(&cache_dir, user.uid, user.gid)?;
+    }
+
+    let bucket_url = format!("http://127.0.0.1:8333/{}", env.bucket);
+    let meta_url = format!(
+        "postgres://{}@127.0.0.1:5432/{}",
+        env.postgres_user, env.postgres_db
+    );
+
+    let mut cmd = command_as_hive(Path::new("juicefs"))?;
+    cmd.arg("mount")
+        .arg("--cache-dir")
+        .arg(&cache_dir)
+        .arg("--cache-size")
+        .arg("10240")
+        .arg("--storage")
+        .arg("s3")
+        .arg("--bucket")
+        .arg(bucket_url)
+        .arg(meta_url)
+        .arg(mountpoint)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(
+            log_file
+                .try_clone()
+                .map_err(|e| err(format!("failed to clone log file: {}", e)))?,
+        ))
+        .stderr(Stdio::from(log_file));
+    cmd.env("META_PASSWORD", &env.postgres_password);
+    cmd.env("ACCESS_KEY", &env.s3_access_key);
+    cmd.env("SECRET_KEY", &env.s3_secret_key);
+
+    detach_child_process(&mut cmd)?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| err(format!("failed to start local mount: {}", e)))?;
+
+    std::thread::sleep(Duration::from_secs(1));
+    if let Some(status) = child
+        .try_wait()
+        .map_err(|e| err(format!("failed to check mount status: {}", e)))?
+    {
+        return Err(err(format!(
+            "local mount failed to start (exit {:?}); see {}",
+            status.code(),
+            log_path.display()
+        )));
+    }
+
+    println!(
+        "local mount started at {} (pid {}, logs: {})",
+        mountpoint.display(),
+        child.id(),
+        log_path.display()
+    );
+    Ok(())
 }
 
 fn spawn_desktop_connect(
@@ -798,6 +884,10 @@ fn detach_child_process(cmd: &mut Command) -> Result<()> {
 }
 
 fn desktop_cli_command(binary: &Path) -> Result<Command> {
+    command_as_hive(binary)
+}
+
+fn command_as_hive(binary: &Path) -> Result<Command> {
     if running_as_root() {
         return Ok(sudo_as_hive(binary, false));
     }
