@@ -169,6 +169,14 @@ ensure_linux_users() {
   if getent group docker >/dev/null 2>&1; then
     run usermod -aG docker hive
   fi
+
+  if getent group sudo >/dev/null 2>&1; then
+    run usermod -aG sudo hive
+  fi
+  if ! run test -f /etc/sudoers.d/90-hive; then
+    run bash -lc 'echo "hive ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-hive'
+    run chmod 440 /etc/sudoers.d/90-hive
+  fi
 }
 
 configure_firewall() {

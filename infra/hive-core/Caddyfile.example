@@ -19,7 +19,9 @@ __HIVE_DOMAIN__ {
     reverse_proxy localhost:8787
   }
 
-  handle {
+  @cam path /cam /cam/*
+  handle @cam {
+    uri strip_prefix /cam
     root * /var/lib/hive/src/claude-agent-mobile/dist
     file_server
     encode gzip
