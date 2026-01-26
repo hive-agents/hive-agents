@@ -21,12 +21,14 @@ pub struct InstallOptions {
     pub skip_up: bool,
     pub skip_format: bool,
     pub skip_connect: bool,
+    pub skip_ssh_user: bool,
     pub replace_existing: bool,
     pub bucket: String,
     pub volume: String,
     pub postgres_user: String,
     pub postgres_db: String,
     pub wait_seconds: u64,
+    pub pairing_binary: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,12 +49,14 @@ pub fn parse_args(args: &mut VecDeque<String>) -> Result<InstallOptions> {
         skip_up: false,
         skip_format: false,
         skip_connect: false,
+        skip_ssh_user: false,
         replace_existing: false,
         bucket: "hive".to_string(),
         volume: "hive".to_string(),
         postgres_user: "juicefs".to_string(),
         postgres_db: "juicefs_meta".to_string(),
         wait_seconds: 60,
+        pairing_binary: None,
     };
 
     while let Some(arg) = args.pop_front() {
@@ -62,11 +66,16 @@ pub fn parse_args(args: &mut VecDeque<String>) -> Result<InstallOptions> {
             "--skip-up" => opts.skip_up = true,
             "--skip-format" => opts.skip_format = true,
             "--skip-connect" => opts.skip_connect = true,
+            "--skip-ssh-user" => opts.skip_ssh_user = true,
             "--replace-existing" => opts.replace_existing = true,
             "--bucket" => opts.bucket = take_value(args, "--bucket")?,
             "--volume" => opts.volume = take_value(args, "--volume")?,
             "--postgres-user" => opts.postgres_user = take_value(args, "--postgres-user")?,
             "--postgres-db" => opts.postgres_db = take_value(args, "--postgres-db")?,
+            "--pairing-binary" => {
+                let value = take_value(args, "--pairing-binary")?;
+                opts.pairing_binary = Some(PathBuf::from(value));
+            }
             "--wait-seconds" => {
                 let value = take_value(args, "--wait-seconds")?;
                 opts.wait_seconds = value
@@ -88,13 +97,15 @@ pub fn run(opts: InstallOptions) -> Result<()> {
     }
 
     prepare_dirs(&opts.root)?;
-    ensure_device_authorized_keys()?;
+    if !opts.skip_ssh_user {
+        ensure_device_authorized_keys()?;
+    }
     write_compose(&opts.root, opts.force, opts.replace_existing)?;
     warn_if_compose_outdated(&opts.root, opts.force)?;
 
     let env_config = ensure_env(&opts.root, &opts)?;
     ensure_s3_config(&opts.root, &env_config, opts.force)?;
-    ensure_pairing_binary(&opts.root)?;
+    ensure_pairing_binary(&opts.root, opts.pairing_binary.as_deref())?;
 
     if !opts.skip_up {
         run_docker_compose(&opts.root)?;
@@ -578,7 +589,30 @@ fn run_docker_compose(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn ensure_pairing_binary(root: &Path) -> Result<()> {
+fn ensure_pairing_binary(root: &Path, pairing_binary: Option<&Path>) -> Result<()> {
+    let binary_dst = root.join("bin").join("hive-core-pairing");
+    if let Some(path) = pairing_binary {
+        if !path.exists() {
+            return Err(err(format!(
+                "pairing binary missing: {}",
+                path.display()
+            )));
+        }
+        fs::copy(path, &binary_dst)
+            .map_err(|e| err(format!("failed to copy pairing binary: {}", e)))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = fs::Permissions::from_mode(0o755);
+            fs::set_permissions(&binary_dst, perms).ok();
+        }
+        return Ok(());
+    }
+
+    if binary_dst.exists() {
+        return Ok(());
+    }
+
     let repo_root = repo_root();
     let cargo_toml = repo_root.join("Cargo.toml");
     if !cargo_toml.exists() {
@@ -601,7 +635,6 @@ fn ensure_pairing_binary(root: &Path) -> Result<()> {
     }
 
     let binary_src = repo_root.join("target").join("release").join("hive-core-pairing");
-    let binary_dst = root.join("bin").join("hive-core-pairing");
     if !binary_src.exists() {
         return Err(err(format!(
             "pairing binary missing after build: {}",

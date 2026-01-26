@@ -112,11 +112,13 @@ fn print_install_usage() {
     println!("  --skip-up               skip docker compose up -d");
     println!("  --skip-format           skip juicefs format");
     println!("  --skip-connect          skip starting local mount");
+    println!("  --skip-ssh-user         skip creating hivec authorized_keys");
     println!("  --replace-existing      replace existing device on pairing");
     println!("  --bucket <NAME>         bucket name (default: hive)");
     println!("  --volume <NAME>         juicefs volume name (default: hive)");
     println!("  --postgres-user <USER>  postgres user (default: juicefs)");
     println!("  --postgres-db <DB>      postgres db (default: juicefs_meta)");
+    println!("  --pairing-binary <PATH> pairing binary path (skips build)");
     println!("  --wait-seconds <N>      wait for services before format (default: 60)");
 }
 
