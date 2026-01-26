@@ -1156,17 +1156,23 @@ fn wait_for_postgres_ready(root: &Path, env: &EnvConfig, wait_seconds: u64) -> R
 }
 
 fn is_postgres_ready(root: &Path, env: &EnvConfig) -> bool {
+    // Use psql to actually connect and run a query
+    // This ensures the database exists, not just that the port is open
     let status = Command::new("docker")
         .arg("compose")
         .arg("exec")
         .arg("-T")
         .arg("postgres")
-        .arg("pg_isready")
+        .arg("psql")
         .arg("-U")
         .arg(&env.postgres_user)
         .arg("-d")
         .arg(&env.postgres_db)
+        .arg("-c")
+        .arg("SELECT 1")
         .current_dir(root)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status();
 
     matches!(status, Ok(status) if status.success())
