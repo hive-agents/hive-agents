@@ -96,6 +96,14 @@ curl -sSL https://d.juicefs.com/install | sh -
 . ~/.bashrc
 ```
 
+## Node + uv
+
+```bash
+sudo apt update
+sudo apt install -y nodejs npm
+curl -LsSf https://astral.sh/uv/install.sh | sh -
+```
+
 ## Reverse proxy for pairing (/hive-pair)
 
 Pairing is served from the host at `http://127.0.0.1:8081`. Use Caddy to expose

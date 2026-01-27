@@ -143,6 +143,13 @@ pub fn run(opts: InstallOptions) -> Result<()> {
 
     if !opts.skip_connect {
         connect_and_mount(&opts, &env_config)?;
+        if let Err(err) = ensure_agent_dirs(&PathBuf::from("/home/hive/hive"), opts.wait_seconds)
+        {
+            eprintln!(
+                "warning: failed to prepare agent config dirs: {}",
+                err
+            );
+        }
     }
 
     print_install_hints(&opts.root, opts.skip_connect)?;
@@ -1080,6 +1087,202 @@ fn ensure_mountpoint(path: &Path) -> Result<()> {
         chown_path(path, user.uid, user.gid)?;
     }
     Ok(())
+}
+
+fn ensure_agent_dirs(mountpoint: &Path, wait_seconds: u64) -> Result<()> {
+    #[cfg(unix)]
+    {
+        if !running_as_root() {
+            return Ok(());
+        }
+        if !mountpoint.exists() {
+            return Ok(());
+        }
+        if !wait_for_mountpoint(mountpoint, wait_seconds) {
+            eprintln!(
+                "warning: {} is not a mountpoint yet; skipping agent dir setup",
+                mountpoint.display()
+            );
+            return Ok(());
+        }
+
+        let user = ensure_user("hive", "/bin/bash")?;
+        let dir_specs = [
+            (mountpoint.join(".claude"), 0o700),
+            (mountpoint.join(".codex"), 0o700),
+            (mountpoint.join(".clawdbot"), 0o700),
+            (mountpoint.join(".clawdbot").join("credentials"), 0o700),
+        ];
+
+        for (dir, mode) in dir_specs {
+            fs::create_dir_all(&dir)
+                .map_err(|e| err(format!("failed to create {}: {}", dir.display(), e)))?;
+            set_permissions(&dir, mode)?;
+            chown_path(&dir, user.uid, user.gid)?;
+        }
+
+        let home_dir = PathBuf::from("/home/hive");
+        ensure_symlink(
+            &home_dir.join(".claude"),
+            &mountpoint.join(".claude"),
+            user.uid,
+            user.gid,
+        )?;
+        ensure_symlink(
+            &home_dir.join(".codex"),
+            &mountpoint.join(".codex"),
+            user.uid,
+            user.gid,
+        )?;
+        ensure_symlink(
+            &home_dir.join(".clawdbot"),
+            &mountpoint.join(".clawdbot"),
+            user.uid,
+            user.gid,
+        )?;
+
+        write_agent_bashrc(mountpoint)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_symlink(link: &Path, target: &Path, uid: u32, gid: u32) -> Result<()> {
+    use std::os::unix::fs as unix_fs;
+
+    if let Ok(existing) = fs::read_link(link) {
+        if existing == target {
+            return Ok(());
+        }
+        fs::remove_file(link).map_err(|e| {
+            err(format!(
+                "failed to remove existing symlink {}: {}",
+                link.display(),
+                e
+            ))
+        })?;
+    } else if link.exists() {
+        let mut backup = link.to_path_buf();
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let backup_name = format!(
+            "{}.bak-{}",
+            link.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("backup"),
+            suffix
+        );
+        backup.set_file_name(backup_name);
+        fs::rename(link, &backup).map_err(|e| {
+            err(format!(
+                "failed to move existing {} to {}: {}",
+                link.display(),
+                backup.display(),
+                e
+            ))
+        })?;
+    }
+
+    unix_fs::symlink(target, link)
+        .map_err(|e| err(format!("failed to link {} -> {}: {}", link.display(), target.display(), e)))?;
+    set_permissions(link, 0o755)?;
+    chown_path(link, uid, gid)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_agent_bashrc(mountpoint: &Path) -> Result<()> {
+    if !running_as_root() {
+        return Ok(());
+    }
+    let home_dir = PathBuf::from("/home/hive");
+    let bashrc_path = home_dir.join(".bashrc");
+    let legacy_env = PathBuf::from("/etc/profile.d/hive-agent-env.sh");
+    let claude_dir = mountpoint.join(".claude");
+    let codex_dir = mountpoint.join(".codex");
+    let clawdbot_dir = mountpoint.join(".clawdbot");
+    let clawdbot_config = clawdbot_dir.join("clawdbot.json");
+    let block_start = "# >>> hive agent env >>>";
+    let block_end = "# <<< hive agent env <<<";
+    let block = format!(
+        "{block_start}\nexport PATH=\"$HOME/.local/bin:$PATH\"\nexport CLAUDE_CONFIG_DIR=\"{}\"\nexport CODEX_HOME=\"{}\"\nexport CLAWDBOT_STATE_DIR=\"{}\"\nexport CLAWDBOT_CONFIG_PATH=\"{}\"\n{block_end}\n",
+        claude_dir.display(),
+        codex_dir.display(),
+        clawdbot_dir.display(),
+        clawdbot_config.display()
+    );
+
+    let mut content = fs::read_to_string(&bashrc_path).unwrap_or_default();
+    if let (Some(start_idx), Some(end_idx)) =
+        (content.find(block_start), content.find(block_end))
+    {
+        if end_idx >= start_idx {
+            let end_idx_end = end_idx + block_end.len();
+            content.replace_range(start_idx..end_idx_end, &block.trim_end());
+            if !content.ends_with('\n') {
+                content.push('\n');
+            }
+        } else {
+            content.push('\n');
+            content.push_str(&block);
+        }
+    } else {
+        if !content.ends_with('\n') && !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(&block);
+    }
+
+    fs::write(&bashrc_path, content)
+        .map_err(|e| err(format!("failed to write {}: {}", bashrc_path.display(), e)))?;
+    set_permissions(&bashrc_path, 0o644)?;
+    #[cfg(unix)]
+    {
+        let user = ensure_user("hive", "/bin/bash")?;
+        chown_path(&bashrc_path, user.uid, user.gid)?;
+    }
+    if legacy_env.exists() {
+        if let Err(err) = fs::remove_file(&legacy_env) {
+            eprintln!(
+                "warning: failed to remove legacy {}: {}",
+                legacy_env.display(),
+                err
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn wait_for_mountpoint(path: &Path, wait_seconds: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(wait_seconds.min(60));
+    loop {
+        if is_mountpoint(path) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+#[cfg(unix)]
+fn is_mountpoint(path: &Path) -> bool {
+    if let Ok(mounts) = fs::read_to_string("/proc/mounts") {
+        let needle = path.display().to_string();
+        for line in mounts.lines() {
+            if let Some(mountpoint) = line.split_whitespace().nth(1) {
+                if mountpoint == needle {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn temp_envelope_path() -> PathBuf {

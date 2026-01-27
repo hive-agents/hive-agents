@@ -115,6 +115,7 @@ install_linux_deps() {
     ufw sudo git jq \
     build-essential pkg-config libssl-dev \
     openssh-server tmux \
+    nodejs npm \
     fuse3 postgresql-client zstd
 
   log "installing Docker"
@@ -141,6 +142,32 @@ DOCKER_EOF'
 
   log "installing JuiceFS"
   run bash -lc "curl -sSL https://d.juicefs.com/install | sh -"
+
+  log "installing Rust toolchain"
+  if ! command -v cargo >/dev/null 2>&1; then
+    run bash -lc "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+  fi
+  if [ -x /root/.cargo/bin/cargo ]; then
+    if [ -x /root/.cargo/bin/rustup ]; then
+      run install -m 755 /root/.cargo/bin/rustup /usr/local/bin/rustup
+    fi
+    run install -m 755 /root/.cargo/bin/cargo /usr/local/bin/cargo
+    run install -m 755 /root/.cargo/bin/rustc /usr/local/bin/rustc
+    if [ -x /root/.cargo/bin/rustfmt ]; then
+      run install -m 755 /root/.cargo/bin/rustfmt /usr/local/bin/rustfmt
+    fi
+    if [ -x /root/.cargo/bin/clippy-driver ]; then
+      run install -m 755 /root/.cargo/bin/clippy-driver /usr/local/bin/clippy-driver
+    fi
+  fi
+
+  log "installing uv"
+  if ! command -v uv >/dev/null 2>&1; then
+    run bash -lc "curl -LsSf https://astral.sh/uv/install.sh | sh -"
+  fi
+  if [ -x /root/.local/bin/uv ]; then
+    run install -m 755 /root/.local/bin/uv /usr/local/bin/uv
+  fi
 }
 
 install_macos_deps() {
