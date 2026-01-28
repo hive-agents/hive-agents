@@ -503,6 +503,7 @@ run_hive_core_install() {
 if [ "${OS}" = "linux" ]; then
   install_linux_deps
   ensure_linux_users
+  run install -d -m 755 -o hive -g hive /home/hive/.local /home/hive/.local/share
   configure_hivec_sshd
   if [ -z "${HIVE_SKIP_FIREWALL}" ]; then
     configure_firewall
