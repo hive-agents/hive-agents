@@ -115,8 +115,15 @@ install_linux_deps() {
     ufw sudo git jq \
     build-essential pkg-config libssl-dev \
     openssh-server tmux \
-    nodejs npm \
     fuse3 postgresql-client zstd
+
+  if ! command -v node >/dev/null 2>&1; then
+    run apt-get install -y nodejs
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    run apt-get install -y npm
+  fi
 
   log "installing Docker"
   run install -m 0755 -d /etc/apt/keyrings
