@@ -132,6 +132,9 @@ pub fn run(opts: InstallOptions) -> Result<()> {
         ensure_s3_config(&opts.root, &env_config, opts.force)?;
     }
     ensure_pairing_binary(&opts.root, opts.pairing_binary.as_deref())?;
+    if let Err(err) = write_agent_bashrc(&PathBuf::from("/home/hive/hive")) {
+        eprintln!("warning: failed to update hive bashrc: {}", err);
+    }
 
     if !opts.skip_up {
         run_docker_compose(&opts.root, !uses_local_s3)?;
@@ -1095,18 +1098,19 @@ fn ensure_agent_dirs(mountpoint: &Path, wait_seconds: u64) -> Result<()> {
         if !running_as_root() {
             return Ok(());
         }
+        let user = ensure_user("hive", "/bin/bash")?;
         if !mountpoint.exists() {
-            return Ok(());
+            fs::create_dir_all(mountpoint)
+                .map_err(|e| err(format!("failed to create {}: {}", mountpoint.display(), e)))?;
+            set_permissions(mountpoint, 0o755)?;
+            chown_path(mountpoint, user.uid, user.gid)?;
         }
         if !wait_for_mountpoint(mountpoint, wait_seconds) {
             eprintln!(
-                "warning: {} is not a mountpoint yet; skipping agent dir setup",
+                "warning: {} is not a mountpoint yet; continuing with local agent dirs",
                 mountpoint.display()
             );
-            return Ok(());
         }
-
-        let user = ensure_user("hive", "/bin/bash")?;
         let dir_specs = [
             (mountpoint.join(".claude"), 0o700),
             (mountpoint.join(".codex"), 0o700),
@@ -1141,7 +1145,6 @@ fn ensure_agent_dirs(mountpoint: &Path, wait_seconds: u64) -> Result<()> {
             user.gid,
         )?;
 
-        write_agent_bashrc(mountpoint)?;
     }
 
     Ok(())
@@ -1204,16 +1207,30 @@ fn write_agent_bashrc(mountpoint: &Path) -> Result<()> {
     let claude_dir = mountpoint.join(".claude");
     let codex_dir = mountpoint.join(".codex");
     let clawdbot_dir = mountpoint.join(".clawdbot");
+    let clawdbot_oauth = clawdbot_dir.join("credentials");
     let clawdbot_config = clawdbot_dir.join("clawdbot.json");
     let block_start = "# >>> hive agent env >>>";
     let block_end = "# <<< hive agent env <<<";
     let block = format!(
-        "{block_start}\nexport PATH=\"$HOME/.local/bin:$PATH\"\nexport CLAUDE_CONFIG_DIR=\"{}\"\nexport CODEX_HOME=\"{}\"\nexport CLAWDBOT_STATE_DIR=\"{}\"\nexport CLAWDBOT_CONFIG_PATH=\"{}\"\n{block_end}\n",
+        "{block_start}\nexport PATH=\"$HOME/.local/bin:$PATH\"\nexport CLAUDE_HOME=\"{}\"\nexport CLAUDE_CONFIG_DIR=\"{}\"\nexport CODEX_HOME=\"{}\"\nexport CLAWDBOT_STATE_DIR=\"{}\"\nexport CLAWDBOT_OAUTH_DIR=\"{}\"\nexport CLAWDBOT_CONFIG_PATH=\"{}\"\nmkdir -p \"$HOME/.local/bin\" \"$CLAUDE_CONFIG_DIR\" \"$CODEX_HOME\" \"$CLAWDBOT_STATE_DIR\" \"$CLAWDBOT_OAUTH_DIR\"\n{block_end}\n",
+        claude_dir.display(),
         claude_dir.display(),
         codex_dir.display(),
         clawdbot_dir.display(),
+        clawdbot_oauth.display(),
         clawdbot_config.display()
     );
+
+    let local_bin = home_dir.join(".local").join("bin");
+    if let Err(err) = fs::create_dir_all(&local_bin) {
+        eprintln!(
+            "warning: failed to create {}: {}",
+            local_bin.display(),
+            err
+        );
+    } else {
+        let _ = set_permissions(&local_bin, 0o755);
+    }
 
     let mut content = fs::read_to_string(&bashrc_path).unwrap_or_default();
     if let (Some(start_idx), Some(end_idx)) =
@@ -1243,6 +1260,9 @@ fn write_agent_bashrc(mountpoint: &Path) -> Result<()> {
     {
         let user = ensure_user("hive", "/bin/bash")?;
         chown_path(&bashrc_path, user.uid, user.gid)?;
+        if local_bin.exists() {
+            let _ = chown_path(&local_bin, user.uid, user.gid);
+        }
     }
     if legacy_env.exists() {
         if let Err(err) = fs::remove_file(&legacy_env) {
