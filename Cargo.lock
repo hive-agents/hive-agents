@@ -350,7 +350,7 @@ dependencies = [
 
 [[package]]
 name = "hive-core-cli"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "chrono",
  "hive-protocol",
@@ -362,7 +362,7 @@ dependencies = [
 
 [[package]]
 name = "hive-core-pairing"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "axum",
  "chrono",
@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "hive-desktop-cli"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "directories",
  "hive-desktop-core",
@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "hive-desktop-core"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "chrono",
  "hive-protocol",
@@ -401,7 +401,7 @@ dependencies = [
 
 [[package]]
 name = "hive-protocol"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "chrono",
  "schemars",

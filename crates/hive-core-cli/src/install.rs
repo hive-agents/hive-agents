@@ -132,8 +132,12 @@ pub fn run(opts: InstallOptions) -> Result<()> {
         ensure_s3_config(&opts.root, &env_config, opts.force)?;
     }
     ensure_pairing_binary(&opts.root, opts.pairing_binary.as_deref())?;
-    if let Err(err) = write_agent_bashrc(&PathBuf::from("/home/hive/hive")) {
+    let hive_mount = PathBuf::from("/home/hive/hive");
+    if let Err(err) = write_agent_bashrc(&hive_mount) {
         eprintln!("warning: failed to update hive bashrc: {}", err);
+    }
+    if let Err(err) = write_hive_backup_cron(&hive_mount) {
+        eprintln!("warning: failed to update hive backup cron: {}", err);
     }
 
     if !opts.skip_up {
@@ -146,8 +150,7 @@ pub fn run(opts: InstallOptions) -> Result<()> {
 
     if !opts.skip_connect {
         connect_and_mount(&opts, &env_config)?;
-        if let Err(err) = ensure_agent_dirs(&PathBuf::from("/home/hive/hive"), opts.wait_seconds)
-        {
+        if let Err(err) = ensure_agent_dirs(&hive_mount, opts.wait_seconds) {
             eprintln!(
                 "warning: failed to prepare agent config dirs: {}",
                 err
@@ -1099,114 +1102,182 @@ fn ensure_agent_dirs(mountpoint: &Path, wait_seconds: u64) -> Result<()> {
             return Ok(());
         }
         let user = ensure_user("hive", "/bin/bash")?;
-        if !mountpoint.exists() {
-            fs::create_dir_all(mountpoint)
-                .map_err(|e| err(format!("failed to create {}: {}", mountpoint.display(), e)))?;
-            set_permissions(mountpoint, 0o755)?;
-            chown_path(mountpoint, user.uid, user.gid)?;
-        }
+        ensure_mountpoint(mountpoint)?;
         if !wait_for_mountpoint(mountpoint, wait_seconds) {
             eprintln!(
                 "warning: {} is not a mountpoint yet; continuing with local agent dirs",
                 mountpoint.display()
             );
         }
-        let dir_specs = [
-            (mountpoint.join(".claude"), 0o700),
-            (mountpoint.join(".codex"), 0o700),
-            (mountpoint.join(".clawdbot"), 0o700),
-            (mountpoint.join(".clawdbot").join("credentials"), 0o700),
-        ];
-
-        for (dir, mode) in dir_specs {
-            fs::create_dir_all(&dir)
-                .map_err(|e| err(format!("failed to create {}: {}", dir.display(), e)))?;
-            set_permissions(&dir, mode)?;
-            chown_path(&dir, user.uid, user.gid)?;
-        }
-
         let home_dir = PathBuf::from("/home/hive");
-        ensure_symlink(
-            &home_dir.join(".claude"),
-            &mountpoint.join(".claude"),
-            user.uid,
-            user.gid,
-        )?;
-        ensure_symlink(
-            &home_dir.join(".codex"),
-            &mountpoint.join(".codex"),
-            user.uid,
-            user.gid,
-        )?;
-        ensure_symlink(
-            &home_dir.join(".clawdbot"),
-            &mountpoint.join(".clawdbot"),
-            user.uid,
-            user.gid,
-        )?;
-
-    }
-
-    Ok(())
-}
-
-#[cfg(unix)]
-fn ensure_symlink(link: &Path, target: &Path, uid: u32, gid: u32) -> Result<()> {
-    use std::os::unix::fs as unix_fs;
-
-    if let Ok(existing) = fs::read_link(link) {
-        if existing == target {
-            return Ok(());
+        let dir_specs = [(".claude", 0o700), (".codex", 0o700), (".clawdbot", 0o700)];
+        for (name, mode) in dir_specs {
+            let home_path = home_dir.join(name);
+            let mount_path = mountpoint.join(name);
+            ensure_home_agent_dir(&mount_path, &home_path, mode, user.uid, user.gid)?;
         }
-        fs::remove_file(link).map_err(|e| {
+
+        let clawdbot_creds = home_dir.join(".clawdbot").join("credentials");
+        fs::create_dir_all(&clawdbot_creds).map_err(|e| {
             err(format!(
-                "failed to remove existing symlink {}: {}",
-                link.display(),
+                "failed to create {}: {}",
+                clawdbot_creds.display(),
                 e
             ))
         })?;
-    } else if link.exists() {
-        let mut backup = link.to_path_buf();
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let backup_name = format!(
-            "{}.bak-{}",
-            link.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("backup"),
-            suffix
-        );
-        backup.set_file_name(backup_name);
-        fs::rename(link, &backup).map_err(|e| {
-            err(format!(
-                "failed to move existing {} to {}: {}",
-                link.display(),
-                backup.display(),
-                e
-            ))
-        })?;
+        set_permissions(&clawdbot_creds, 0o700)?;
+        chown_path(&clawdbot_creds, user.uid, user.gid)?;
+
     }
 
-    unix_fs::symlink(target, link)
-        .map_err(|e| err(format!("failed to link {} -> {}: {}", link.display(), target.display(), e)))?;
-    set_permissions(link, 0o755)?;
-    chown_path(link, uid, gid)?;
     Ok(())
 }
 
 #[cfg(unix)]
-fn write_agent_bashrc(mountpoint: &Path) -> Result<()> {
+fn ensure_home_agent_dir(
+    mount_path: &Path,
+    home_path: &Path,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+) -> Result<()> {
+    if let Ok(meta) = fs::symlink_metadata(home_path) {
+        if meta.file_type().is_symlink() {
+            fs::remove_file(home_path).map_err(|e| {
+                err(format!(
+                    "failed to remove existing symlink {}: {}",
+                    home_path.display(),
+                    e
+                ))
+            })?;
+        } else if !meta.is_dir() {
+            backup_existing_path(home_path)?;
+        }
+    }
+
+    if !home_path.exists() {
+        if mount_path.exists() {
+            match fs::rename(mount_path, home_path) {
+                Ok(()) => {}
+                Err(rename_err)
+                    if rename_err.raw_os_error() == Some(18) =>
+                {
+                    copy_dir_recursive(mount_path, home_path)?;
+                    if let Err(remove_err) = fs::remove_dir_all(mount_path) {
+                        eprintln!(
+                            "warning: failed to remove old {}: {}",
+                            mount_path.display(),
+                            remove_err
+                        );
+                    }
+                }
+                Err(rename_err) => {
+                    return Err(err(format!(
+                        "failed to move {} to {}: {}",
+                        mount_path.display(),
+                        home_path.display(),
+                        rename_err
+                    )))
+                }
+            }
+        } else {
+            fs::create_dir_all(home_path).map_err(|e| {
+                err(format!(
+                    "failed to create {}: {}",
+                    home_path.display(),
+                    e
+                ))
+            })?;
+        }
+    }
+
+    set_permissions(home_path, mode)?;
+    chown_path(home_path, uid, gid)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn backup_existing_path(path: &Path) -> Result<()> {
+    let mut backup = path.to_path_buf();
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let backup_name = format!(
+        "{}.bak-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("backup"),
+        suffix
+    );
+    backup.set_file_name(backup_name);
+    fs::rename(path, &backup).map_err(|e| {
+        err(format!(
+            "failed to move existing {} to {}: {}",
+            path.display(),
+            backup.display(),
+            e
+        ))
+    })?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)
+        .map_err(|e| err(format!("failed to create {}: {}", dst.display(), e)))?;
+    for entry in fs::read_dir(src)
+        .map_err(|e| err(format!("failed to read {}: {}", src.display(), e)))?
+    {
+        let entry = entry.map_err(|e| err(format!("failed to read dir entry: {}", e)))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| err(format!("failed to stat {}: {}", entry.path().display(), e)))?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if file_type.is_symlink() {
+            #[cfg(unix)]
+            {
+                let target = fs::read_link(&from).map_err(|e| {
+                    err(format!("failed to read symlink {}: {}", from.display(), e))
+                })?;
+                std::os::unix::fs::symlink(&target, &to).map_err(|e| {
+                    err(format!(
+                        "failed to create symlink {} -> {}: {}",
+                        to.display(),
+                        target.display(),
+                        e
+                    ))
+                })?;
+            }
+            #[cfg(not(unix))]
+            {
+                fs::copy(&from, &to).map_err(|e| {
+                    err(format!("failed to copy {} to {}: {}", from.display(), to.display(), e))
+                })?;
+            }
+        } else {
+            fs::copy(&from, &to).map_err(|e| {
+                err(format!("failed to copy {} to {}: {}", from.display(), to.display(), e))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_agent_bashrc(_mountpoint: &Path) -> Result<()> {
     if !running_as_root() {
         return Ok(());
     }
     let home_dir = PathBuf::from("/home/hive");
     let bashrc_path = home_dir.join(".bashrc");
     let legacy_env = PathBuf::from("/etc/profile.d/hive-agent-env.sh");
-    let claude_dir = mountpoint.join(".claude");
-    let codex_dir = mountpoint.join(".codex");
-    let clawdbot_dir = mountpoint.join(".clawdbot");
+    let claude_dir = home_dir.join(".claude");
+    let codex_dir = home_dir.join(".codex");
+    let clawdbot_dir = home_dir.join(".clawdbot");
     let clawdbot_oauth = clawdbot_dir.join("credentials");
     let clawdbot_config = clawdbot_dir.join("clawdbot.json");
     let block_start = "# >>> hive agent env >>>";
@@ -1273,6 +1344,25 @@ fn write_agent_bashrc(mountpoint: &Path) -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_hive_backup_cron(mountpoint: &Path) -> Result<()> {
+    if !running_as_root() {
+        return Ok(());
+    }
+    ensure_mountpoint(mountpoint)?;
+    let cron_path = PathBuf::from("/etc/cron.d/hive-agent-backup");
+    let home_dir = PathBuf::from("/home/hive");
+    let content = format!(
+        "# hive agent backups\nSHELL=/bin/bash\nPATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n0 * * * * hive rsync -a {home}/.claude/ {mount}/.claude/ >/dev/null 2>&1\n0 * * * * hive rsync -a {home}/.codex/ {mount}/.codex/ >/dev/null 2>&1\n0 * * * * hive rsync -a {home}/.clawdbot/ {mount}/.clawdbot/ >/dev/null 2>&1\n",
+        home = home_dir.display(),
+        mount = mountpoint.display()
+    );
+    fs::write(&cron_path, content)
+        .map_err(|e| err(format!("failed to write {}: {}", cron_path.display(), e)))?;
+    set_permissions(&cron_path, 0o644)?;
     Ok(())
 }
 
